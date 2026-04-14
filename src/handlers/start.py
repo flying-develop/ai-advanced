@@ -20,7 +20,8 @@ _HELP_TEXT = (
     "Команды:\n"
     "/start — приветствие\n"
     "/help — эта справка\n"
-    "/reset — сбросить историю диалога"
+    "/reset — сбросить историю диалога\n"
+    "/new_chat — начать новый диалог"
 )
 
 
@@ -44,3 +45,20 @@ async def handle_reset(
     """Reset the current conversation context on /reset."""
     await conversation_service.reset_conversation(user_id=message.from_user.id)
     await message.answer("История диалога сброшена. Начинаем заново!")
+
+
+@start_router.message(Command("new_chat"))
+async def handle_new_chat(
+    message: types.Message,
+    conversation_service: ConversationService,
+) -> None:
+    """Start a fresh conversation on /new_chat, closing the previous one."""
+    had_previous = await conversation_service.start_new_conversation(
+        user_id=message.from_user.id,
+    )
+    if had_previous:
+        await message.answer(
+            "Начинаю новый диалог. Контекст предыдущего разговора очищен."
+        )
+    else:
+        await message.answer("Новый диалог начат.")
