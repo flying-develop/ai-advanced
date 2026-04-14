@@ -80,3 +80,21 @@ class ConversationService:
         if conversation:
             await self._repo.deactivate(conversation)
             logger.info("Conversation reset for user_id=%s", user_id)
+
+    async def new_chat(self, user_id: int) -> bool:
+        """Deactivate current conversation and create a new one.
+
+        Args:
+            user_id: Telegram user ID.
+
+        Returns:
+            True if there was an active conversation that was deactivated, False otherwise.
+        """
+        conversation = await self._repo.get_active(user_id=user_id)
+        had_active = conversation is not None
+        if had_active:
+            await self._repo.deactivate(conversation)
+            logger.info("Conversation deactivated for user_id=%s", user_id)
+        await self._repo.get_or_create(user_id=user_id)
+        logger.info("New conversation started for user_id=%s", user_id)
+        return had_active
