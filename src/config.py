@@ -15,14 +15,16 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
+        extra="ignore",
     )
 
     bot_token: str
     allowed_user_id: int
-    anthropic_api_key: str
+    qwen_api_key: str
 
     db_url: str = "sqlite+aiosqlite:///data/bot.db"
-    llm_model: str = "claude-sonnet-4-20250514"
+    qwen_base_url: str = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+    llm_model: str = "qwen-plus"
     max_context_messages: int = 20
 
 

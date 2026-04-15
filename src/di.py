@@ -33,8 +33,9 @@ def build_session_pool() -> async_sessionmaker[AsyncSession]:
 def build_llm_service() -> LLMService:
     """Instantiate the LLMService with settings from config."""
     return LLMService(
-        api_key=settings.anthropic_api_key,
+        api_key=settings.qwen_api_key,
         model=settings.llm_model,
+        base_url=settings.qwen_base_url,
     )
 
 
