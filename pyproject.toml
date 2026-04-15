@@ -12,7 +12,6 @@ dependencies = [
     "sqlalchemy>=2.0",
     "aiosqlite",
     "pydantic-settings",
-    "anthropic",
     "alembic",
     "httpx",
 ]
