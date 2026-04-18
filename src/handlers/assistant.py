@@ -30,6 +30,8 @@ async def handle_message(
         await message.answer(EMPTY_MESSAGE_PROMPT)
         return
 
+    assert message.from_user is not None  # guaranteed by AuthMiddleware
+    assert message.bot is not None  # always set by aiogram dispatcher
     logger.info("Received message from user_id=%s", message.from_user.id)
 
     await message.bot.send_chat_action(
