@@ -54,16 +54,22 @@ class ConversationService:
         """
         conversation = await self._repo.get_or_create(user_id=user_id)
 
-        await self._repo.add_message(
+        # Build context from existing messages before adding the new user message,
+        # so that on LLM failure nothing is persisted (atomic save below).
+        existing_context = await self._repo.get_recent_messages(
+            conversation_id=conversation.id,
+            limit=settings.max_context_messages - 1,
+        )
+
+        # Append the incoming user message to context for LLM without persisting yet.
+        from src.models.conversation import Message as MessageModel  # local import to avoid circular
+
+        pending_user_msg = MessageModel(
             conversation_id=conversation.id,
             role="user",
             content=user_message,
         )
-
-        context = await self._repo.get_recent_messages(
-            conversation_id=conversation.id,
-            limit=settings.max_context_messages,
-        )
+        context = existing_context + [pending_user_msg]
 
         try:
             t0 = time.monotonic()
@@ -74,6 +80,12 @@ class ConversationService:
             logger.exception("LLM request failed for user_id=%s", user_id)
             return LLM_ERROR_FALLBACK
 
+        # Persist both messages only after a successful LLM response.
+        await self._repo.add_message(
+            conversation_id=conversation.id,
+            role="user",
+            content=user_message,
+        )
         await self._repo.add_message(
             conversation_id=conversation.id,
             role="assistant",
