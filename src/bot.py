@@ -10,6 +10,7 @@ from typing import Any, Awaitable, Callable, Dict
 from aiogram import Bot, Dispatcher, types
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from sqlalchemy.ext.asyncio import AsyncSession
 
 # local
 from src.config import settings
@@ -37,7 +38,7 @@ class ServiceInjectMiddleware:
         event: types.TelegramObject,
         data: Dict[str, Any],
     ) -> Any:
-        session = data.get("session")
+        session: AsyncSession = data["session"]
         data["conversation_service"] = build_conversation_service(
             session=session,
             llm_service=self._llm_service,

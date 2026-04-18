@@ -39,6 +39,7 @@ async def handle_reset(
     conversation_service: ConversationService,
 ) -> None:
     """Reset the current conversation context on /reset."""
+    assert message.from_user is not None
     await conversation_service.reset_conversation(user_id=message.from_user.id)
     await message.answer(RESET_SUCCESS)
 
@@ -49,6 +50,7 @@ async def handle_new_chat(
     conversation_service: ConversationService,
 ) -> None:
     """Start a fresh conversation on /new_chat, closing the previous one."""
+    assert message.from_user is not None
     had_previous = await conversation_service.start_new_conversation(
         user_id=message.from_user.id,
     )

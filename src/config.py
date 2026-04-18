@@ -28,4 +28,4 @@ class Settings(BaseSettings):
     max_context_messages: int = 20
 
 
-settings = Settings()
+settings = Settings()  # type: ignore[call-arg]
