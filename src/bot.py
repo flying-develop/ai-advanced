@@ -10,6 +10,7 @@ from typing import Any, Awaitable, Callable, Dict
 from aiogram import Bot, Dispatcher, types
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiogram.types import ErrorEvent
 from sqlalchemy.ext.asyncio import AsyncSession
 
 # local
@@ -69,6 +70,24 @@ async def main() -> None:
     dp.include_router(start_router)
     dp.include_router(stats_router)
     dp.include_router(assistant_router)
+
+    @dp.errors()
+    async def handle_error(event: ErrorEvent) -> bool:
+        logger.exception(
+            "Unhandled exception for update %s: %s",
+            event.update.update_id,
+            event.exception,
+        )
+        update = event.update
+        message: types.Message | None = None
+        if update.message:
+            message = update.message
+        elif update.callback_query and update.callback_query.message:
+            msg = update.callback_query.message
+            message = msg if isinstance(msg, types.Message) else None
+        if message is not None:
+            await message.answer("Произошла внутренняя ошибка.")
+        return True
 
     logger.info("Starting bot polling…")
     await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
