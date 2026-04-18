@@ -10,6 +10,8 @@ models:
     roles:
       - chat
       - edit
+    capabilities:
+      - edit  # только edit, БЕЗ tool_use
     defaultCompletionOptions:
       temperature: 0.1
       topP: 0.9
