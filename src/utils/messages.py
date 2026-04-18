@@ -28,3 +28,20 @@ STATS_TEXT: str = (
 )
 
 STATS_NO_HISTORY: str = "У тебя ещё нет сообщений. Напиши что-нибудь!"
+
+INTERNAL_ERROR_MESSAGE: str = "Произошла внутренняя ошибка."
+HISTORY_NO_MESSAGES: str = "История пуста. Начни диалог — напиши что-нибудь!"
+HISTORY_USER_PREFIX: str = "👤"
+HISTORY_ASSISTANT_PREFIX: str = "🤖"
+
+HELP_TEXT_FULL: str = (
+    "Привет! Я твой персональный AI-ассистент.\n\n"
+    "Просто напиши мне сообщение, и я отвечу.\n\n"
+    "Команды:\n"
+    "/start — приветствие\n"
+    "/help — эта справка\n"
+    "/reset — сбросить историю диалога\n"
+    "/new_chat — начать новый диалог\n"
+    "/history — последние 5 сообщений\n"
+    "/stats — твоя статистика"
+)

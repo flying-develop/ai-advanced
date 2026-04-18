@@ -117,6 +117,26 @@ class ConversationRepository(BaseRepository[Conversation]):
         result = await self._session.execute(stmt)
         return result.scalar_one_or_none()
 
+    async def get_last_messages_for_user(
+        self,
+        user_id: int,
+        limit: int = 5,
+    ) -> list[Message]:
+        """Return the last `limit` messages from the active conversation for user_id."""
+        subq = (
+            select(Conversation.id)
+            .where(Conversation.user_id == user_id, Conversation.is_active.is_(True))
+            .scalar_subquery()
+        )
+        stmt = (
+            select(Message)
+            .where(Message.conversation_id == subq)
+            .order_by(Message.id.desc())
+            .limit(limit)
+        )
+        result = await self._session.execute(stmt)
+        return list(reversed(list(result.scalars().all())))
+
     async def get_recent_messages(
         self,
         conversation_id: int,

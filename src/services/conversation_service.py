@@ -127,6 +127,19 @@ class ConversationService:
         )
         return had_previous
 
+    async def get_history(self, user_id: int, limit: int = 5) -> list[dict[str, str]]:
+        """Return the last `limit` messages from the active conversation.
+
+        Args:
+            user_id: Telegram user ID.
+            limit: Number of recent messages to fetch.
+
+        Returns:
+            List of dicts with keys "role" and "content", oldest-first.
+        """
+        messages = await self._repo.get_last_messages_for_user(user_id=user_id, limit=limit)
+        return [{"role": m.role, "content": m.content} for m in messages]
+
     async def get_stats(self, user_id: int) -> UserStats:
         """Collect aggregated statistics for the given user.
 

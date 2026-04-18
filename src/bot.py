@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 # local
 from src.config import settings
 from src.di import build_conversation_service, build_llm_service, build_session_pool
-from src.handlers import assistant_router, start_router, stats_router
+from src.handlers import assistant_router, history_router, start_router, stats_router
 from src.middlewares.auth import AuthMiddleware
 from src.middlewares.db_session import DbSessionMiddleware
 
@@ -69,6 +69,7 @@ async def main() -> None:
     # Register routers (order matters: commands before plain-text assistant)
     dp.include_router(start_router)
     dp.include_router(stats_router)
+    dp.include_router(history_router)
     dp.include_router(assistant_router)
 
     @dp.errors()
