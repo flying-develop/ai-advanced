@@ -5,6 +5,7 @@ import logging
 
 # third-party
 from aiogram import F, Router, types
+from aiogram.enums import ChatAction
 
 # local
 from src.services.conversation_service import ConversationService
@@ -28,7 +29,14 @@ async def handle_message(
         await message.answer(EMPTY_MESSAGE_PROMPT)
         return
 
+    assert message.from_user is not None
+    assert message.bot is not None
     logger.info("Received message from user_id=%s", message.from_user.id)
+
+    await message.bot.send_chat_action(
+        chat_id=message.chat.id,
+        action=ChatAction.TYPING,
+    )
 
     response = await conversation_service.get_ai_response(
         user_id=message.from_user.id,
