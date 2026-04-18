@@ -9,6 +9,7 @@ from typing import Optional
 
 # local
 from src.config import settings
+from src.models.conversation import Message as MessageModel
 from src.repositories.conversation_repo import ConversationRepository
 from src.services.llm_service import LLMService, LLMServiceError
 from src.utils.messages import LLM_ERROR_FALLBACK
@@ -54,16 +55,16 @@ class ConversationService:
         """
         conversation = await self._repo.get_or_create(user_id=user_id)
 
-        await self._repo.add_message(
+        existing_context = await self._repo.get_recent_messages(
+            conversation_id=conversation.id,
+            limit=settings.max_context_messages - 1,
+        )
+        pending_user_msg = MessageModel(
             conversation_id=conversation.id,
             role="user",
             content=user_message,
         )
-
-        context = await self._repo.get_recent_messages(
-            conversation_id=conversation.id,
-            limit=settings.max_context_messages,
-        )
+        context = existing_context + [pending_user_msg]
 
         try:
             t0 = time.monotonic()
@@ -74,6 +75,11 @@ class ConversationService:
             logger.exception("LLM request failed for user_id=%s", user_id)
             return LLM_ERROR_FALLBACK
 
+        await self._repo.add_message(
+            conversation_id=conversation.id,
+            role="user",
+            content=user_message,
+        )
         await self._repo.add_message(
             conversation_id=conversation.id,
             role="assistant",

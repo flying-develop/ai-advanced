@@ -55,6 +55,22 @@ class TestGetAiResponse:
         assert "ошибка" in response.lower()
         assert response != "Hello?"
 
+    async def test_llm_error_does_not_persist_user_message(
+        self,
+        conversation_service: ConversationService,
+        mock_llm_service: AsyncMock,
+        session: AsyncSession,
+    ) -> None:
+        """On LLM failure the user message must NOT be saved to the database."""
+        mock_llm_service.complete.side_effect = LLMServiceError("down")
+
+        await conversation_service.get_ai_response(
+            user_id=42, user_message="not saved"
+        )
+
+        result = await session.execute(select(Message))
+        assert len(list(result.scalars().all())) == 0
+
     async def test_empty_message_still_delegates_to_llm(
         self,
         conversation_service: ConversationService,
