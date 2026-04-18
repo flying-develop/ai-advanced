@@ -10,6 +10,9 @@ from src.utils.messages import (
     LLM_ERROR_FALLBACK,
     STATS_TEXT,
     STATS_NO_HISTORY,
+    HISTORY_NO_MESSAGES,
+    HISTORY_USER_PREFIX,
+    HISTORY_ASSISTANT_PREFIX,
 )
 
 __all__ = [
@@ -23,4 +26,7 @@ __all__ = [
     "LLM_ERROR_FALLBACK",
     "STATS_TEXT",
     "STATS_NO_HISTORY",
+    "HISTORY_NO_MESSAGES",
+    "HISTORY_USER_PREFIX",
+    "HISTORY_ASSISTANT_PREFIX",
 ]
