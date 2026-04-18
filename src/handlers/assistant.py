@@ -8,6 +8,7 @@ from aiogram import F, Router, types
 
 # local
 from src.services.conversation_service import ConversationService
+from src.utils.messages import EMPTY_MESSAGE_PROMPT
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +22,10 @@ async def handle_message(
 ) -> None:
     """Handle incoming text message — delegate to ConversationService."""
     user_text = message.text
-    if not user_text:
+    if user_text is None:
+        return
+    if not user_text.strip():
+        await message.answer(EMPTY_MESSAGE_PROMPT)
         return
 
     logger.info("Received message from user_id=%s", message.from_user.id)

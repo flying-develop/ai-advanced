@@ -2,13 +2,27 @@
 
 # stdlib
 import logging
+import time
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Optional
 
 # local
 from src.config import settings
 from src.repositories.conversation_repo import ConversationRepository
 from src.services.llm_service import LLMService, LLMServiceError
+from src.utils.messages import LLM_ERROR_FALLBACK
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class UserStats:
+    """Aggregated statistics for a single user."""
+
+    conversation_count: int
+    message_count: int
+    first_message_at: Optional[datetime]
 
 
 class ConversationNotFoundError(Exception):
@@ -52,10 +66,13 @@ class ConversationService:
         )
 
         try:
+            t0 = time.monotonic()
             ai_response = await self._llm.complete(messages=context)
+            elapsed = time.monotonic() - t0
+            logger.info("LLM response in %.2fs for user_id=%s", elapsed, user_id)
         except LLMServiceError:
             logger.exception("LLM request failed for user_id=%s", user_id)
-            return "Произошла ошибка при обращении к AI. Попробуй позже."
+            return LLM_ERROR_FALLBACK
 
         await self._repo.add_message(
             conversation_id=conversation.id,
@@ -103,3 +120,21 @@ class ConversationService:
             new_conversation.id,
         )
         return had_previous
+
+    async def get_stats(self, user_id: int) -> UserStats:
+        """Collect aggregated statistics for the given user.
+
+        Args:
+            user_id: Telegram user ID.
+
+        Returns:
+            UserStats with conversation_count, message_count, and first_message_at.
+        """
+        conversation_count = await self._repo.count_conversations(user_id=user_id)
+        message_count = await self._repo.count_messages(user_id=user_id)
+        first_message_at = await self._repo.get_first_message_date(user_id=user_id)
+        return UserStats(
+            conversation_count=conversation_count,
+            message_count=message_count,
+            first_message_at=first_message_at,
+        )

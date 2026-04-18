@@ -9,32 +9,28 @@ from aiogram.filters import Command
 
 # local
 from src.services.conversation_service import ConversationService
+from src.utils.messages import (
+    HELP_TEXT,
+    NEW_CHAT_NO_PREVIOUS,
+    NEW_CHAT_STARTED,
+    RESET_SUCCESS,
+)
 
 logger = logging.getLogger(__name__)
 
 start_router = Router(name="start")
 
-_HELP_TEXT = (
-    "Привет! Я твой персональный AI-ассистент.\n\n"
-    "Просто напиши мне сообщение, и я отвечу.\n\n"
-    "Команды:\n"
-    "/start — приветствие\n"
-    "/help — эта справка\n"
-    "/reset — сбросить историю диалога\n"
-    "/new_chat — начать новый диалог"
-)
-
 
 @start_router.message(Command("start"))
 async def handle_start(message: types.Message) -> None:
     """Send a welcome message on /start."""
-    await message.answer(_HELP_TEXT)
+    await message.answer(HELP_TEXT)
 
 
 @start_router.message(Command("help"))
 async def handle_help(message: types.Message) -> None:
     """Send a help message on /help."""
-    await message.answer(_HELP_TEXT)
+    await message.answer(HELP_TEXT)
 
 
 @start_router.message(Command("reset"))
@@ -44,7 +40,7 @@ async def handle_reset(
 ) -> None:
     """Reset the current conversation context on /reset."""
     await conversation_service.reset_conversation(user_id=message.from_user.id)
-    await message.answer("История диалога сброшена. Начинаем заново!")
+    await message.answer(RESET_SUCCESS)
 
 
 @start_router.message(Command("new_chat"))
@@ -57,8 +53,6 @@ async def handle_new_chat(
         user_id=message.from_user.id,
     )
     if had_previous:
-        await message.answer(
-            "Начинаю новый диалог. Контекст предыдущего разговора очищен."
-        )
+        await message.answer(NEW_CHAT_STARTED)
     else:
-        await message.answer("Новый диалог начат.")
+        await message.answer(NEW_CHAT_NO_PREVIOUS)

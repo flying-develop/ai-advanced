@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 # local
 from src.models.conversation import Conversation, Message
 from src.repositories.conversation_repo import ConversationRepository
-from src.services.conversation_service import ConversationService
+from src.services.conversation_service import ConversationService, UserStats
 from src.services.llm_service import LLMServiceError
 
 
@@ -151,3 +151,48 @@ class TestStartNewConversation:
         """start_new_conversation returns False when there is nothing to deactivate."""
         had_previous = await conversation_service.start_new_conversation(user_id=999)
         assert had_previous is False
+
+
+class TestGetStats:
+    """Tests for ConversationService.get_stats."""
+
+    async def test_returns_zeros_for_user_with_no_history(
+        self,
+        conversation_service: ConversationService,
+    ) -> None:
+        """User with no messages: all counts zero, first_message_at is None."""
+        stats = await conversation_service.get_stats(user_id=777)
+
+        assert isinstance(stats, UserStats)
+        assert stats.conversation_count == 0
+        assert stats.message_count == 0
+        assert stats.first_message_at is None
+
+    async def test_counts_messages_across_multiple_conversations(
+        self,
+        conversation_service: ConversationService,
+        conversation_repo: ConversationRepository,
+    ) -> None:
+        """Stats accumulate message count across all conversations."""
+        # Conversation 1 — 2 messages via service (user + assistant each)
+        await conversation_service.get_ai_response(user_id=55, user_message="Hello")
+        # Start a new conversation and send another message — 2 more messages
+        await conversation_service.start_new_conversation(user_id=55)
+        await conversation_service.get_ai_response(user_id=55, user_message="Hi again")
+
+        stats = await conversation_service.get_stats(user_id=55)
+
+        assert stats.conversation_count == 2
+        assert stats.message_count == 4  # 2 conversations × (1 user + 1 assistant)
+        assert stats.first_message_at is not None
+
+    async def test_first_message_at_is_populated(
+        self,
+        conversation_service: ConversationService,
+    ) -> None:
+        """After the first message first_message_at is a non-None datetime."""
+        await conversation_service.get_ai_response(user_id=66, user_message="Hey")
+
+        stats = await conversation_service.get_stats(user_id=66)
+
+        assert stats.first_message_at is not None
