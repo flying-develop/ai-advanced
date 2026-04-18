@@ -19,6 +19,7 @@ from src.di import build_conversation_service, build_llm_service, build_session_
 from src.handlers import assistant_router, history_router, start_router, stats_router
 from src.middlewares.auth import AuthMiddleware
 from src.middlewares.db_session import DbSessionMiddleware
+from src.utils.messages import INTERNAL_ERROR_MESSAGE
 
 logging.basicConfig(
     level=logging.INFO,
@@ -87,7 +88,7 @@ async def main() -> None:
             msg = update.callback_query.message
             message = msg if isinstance(msg, types.Message) else None
         if message is not None:
-            await message.answer("Произошла внутренняя ошибка.")
+            await message.answer(INTERNAL_ERROR_MESSAGE)
         return True
 
     logger.info("Starting bot polling…")

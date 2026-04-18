@@ -23,19 +23,6 @@ def truncate(text: str, max_length: int = MAX_TELEGRAM_MESSAGE_LENGTH) -> str:
     return text[: max_length - 1] + "…"
 
 
-def split_long_message(text: str, chunk_size: int = MAX_TELEGRAM_MESSAGE_LENGTH) -> list[str]:
-    """Split a long string into chunks of at most chunk_size characters.
-
-    Args:
-        text: The text to split.
-        chunk_size: Maximum size per chunk.
-
-    Returns:
-        List of string chunks.
-    """
-    return [text[i : i + chunk_size] for i in range(0, len(text), chunk_size)]
-
-
 def split_message(text: str, max_len: int = MAX_TELEGRAM_MESSAGE_LENGTH) -> list[str]:
     """Split text into parts of at most max_len characters, breaking on paragraph boundaries.
 

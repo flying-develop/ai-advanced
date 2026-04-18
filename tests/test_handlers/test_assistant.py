@@ -17,6 +17,9 @@ def _make_message(text: str | None) -> AsyncMock:
     message.text = text
     message.from_user = MagicMock()
     message.from_user.id = 12345
+    message.chat = MagicMock()
+    message.chat.id = 12345
+    message.bot = AsyncMock()
     return message
 
 
@@ -71,6 +74,23 @@ async def test_valid_message_delegates_to_service() -> None:
         user_message="Hello",
     )
     message.answer.assert_awaited_once_with("Hi there!")
+
+
+@pytest.mark.asyncio
+async def test_typing_indicator_sent_before_llm_call() -> None:
+    """ChatAction.TYPING must be sent before delegating to the service."""
+    from aiogram.enums import ChatAction
+
+    message = _make_message("Ping")
+    mock_service = AsyncMock()
+    mock_service.get_ai_response.return_value = "Pong"
+
+    await handle_message(message, mock_service)
+
+    message.bot.send_chat_action.assert_awaited_once_with(
+        chat_id=12345,
+        action=ChatAction.TYPING,
+    )
 
 
 @pytest.mark.asyncio
