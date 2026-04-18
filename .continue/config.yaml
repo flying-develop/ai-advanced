@@ -1,0 +1,61 @@
+name: AI Advanced Local
+version: 1.0.0
+schema: v1
+
+models:
+  # Чат + генерация кода (основная рабочая модель)
+  - name: Qwen2.5 Coder 7B
+    provider: ollama
+    model: qwen2.5-coder:7b
+    roles:
+      - chat
+      - edit
+    defaultCompletionOptions:
+      temperature: 0.1
+      topP: 0.9
+      maxTokens: 2048
+      contextLength: 8192
+
+  # Тяжёлая альтернатива для сложных задач
+  - name: DeepSeek Coder V2 16B
+    provider: ollama
+    model: deepseek-coder-v2:16b
+    roles:
+      - chat
+      - edit
+    defaultCompletionOptions:
+      temperature: 0.1
+      topP: 0.9
+      maxTokens: 2048
+      contextLength: 4096  # меньше контекст — экономим RAM
+
+  # Автокомплит (быстрая лёгкая модель)
+  - name: Qwen2.5 Coder 3B Autocomplete
+    provider: ollama
+    model: qwen2.5-coder:3b
+    roles:
+      - autocomplete
+    autocompleteOptions:
+      debounceDelay: 500
+      maxPromptTokens: 2048
+      multilineCompletions: auto
+
+# Правила проекта — аналог CLAUDE.md в системном промпте
+rules:
+  - "Архитектура: Handlers (thin) → Services (logic) → Repositories (data)"
+  - "Handler ТОЛЬКО: парсит вход, вызывает service, отправляет ответ. Никакой бизнес-логики."
+  - "Вся работа с БД — через SQLAlchemy ORM и Repository-паттерн. Нет прямых SQL."
+  - "Конфигурация ТОЛЬКО через src/config.py (pydantic-settings). Нет os.getenv()."
+  - "Async everywhere. Никаких блокирующих вызовов (requests, time.sleep)."
+  - "Type hints обязательны на всех функциях (аргументы + return)."
+  - "Нет print(). Только logging через logger = logging.getLogger(__name__)."
+  - "Порядок импортов: stdlib → third-party → local (разделены пустой строкой)."
+  - "Docstrings обязательны для модулей, классов и публичных методов."
+  - "DI через аргументы, не глобальные переменные."
+
+# Контекст-провайдеры
+context:
+  - provider: code
+  - provider: diff
+  - provider: terminal
+  - provider: folder
