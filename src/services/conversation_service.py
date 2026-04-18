@@ -50,7 +50,10 @@ class ConversationService:
             user_message: The text sent by the user.
 
         Returns:
-            AI-generated response text.
+            AI-generated response text, or a human-readable fallback on LLM error.
+
+        Raises:
+            Does not propagate LLMServiceError — it is caught and converted to a fallback string.
         """
         conversation = await self._repo.get_or_create(user_id=user_id)
 
@@ -104,6 +107,9 @@ class ConversationService:
 
         Args:
             user_id: Telegram user ID.
+
+        Returns:
+            None. No-op if no active conversation exists.
         """
         conversation = await self._repo.get_active(user_id=user_id)
         if conversation:
