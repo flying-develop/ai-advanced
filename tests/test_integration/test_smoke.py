@@ -54,6 +54,18 @@ async def test_smoke_ai_dialogue_messages_persisted_in_db(
     assert conv_result.scalar_one_or_none() is not None
 
 
+async def test_smoke_new_chat_no_prior_conversation_creates_fresh_one(
+    conversation_service: ConversationService,
+    conversation_repo: ConversationRepository,
+) -> None:
+    """Scenario 3b — /new_chat with no prior conversation: returns False, new conv created."""
+    had_previous = await conversation_service.start_new_conversation(user_id=555)
+
+    assert had_previous is False
+    new_conv = await conversation_repo.get_active(user_id=555)
+    assert new_conv is not None
+
+
 async def test_smoke_new_chat_deactivates_old_conversation_and_routes_to_new(
     conversation_service: ConversationService,
     conversation_repo: ConversationRepository,

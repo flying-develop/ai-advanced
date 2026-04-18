@@ -71,3 +71,18 @@ async def test_valid_message_delegates_to_service() -> None:
         user_message="Hello",
     )
     message.answer.assert_awaited_once_with("Hi there!")
+
+
+@pytest.mark.asyncio
+async def test_long_response_sent_as_multiple_messages() -> None:
+    """Response longer than 4096 chars must arrive as multiple answer() calls."""
+    message = _make_message("Question")
+    mock_service = AsyncMock()
+    # Two paragraphs each >2000 chars — total >4096, should split on the blank line
+    para1 = "A" * 2100
+    para2 = "B" * 2100
+    mock_service.get_ai_response.return_value = para1 + "\n\n" + para2
+
+    await handle_message(message, mock_service)
+
+    assert message.answer.await_count >= 2
