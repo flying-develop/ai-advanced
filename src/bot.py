@@ -10,13 +10,16 @@ from typing import Any, Awaitable, Callable, Dict
 from aiogram import Bot, Dispatcher, types
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiogram.types import ErrorEvent
+from sqlalchemy.ext.asyncio import AsyncSession
 
 # local
 from src.config import settings
 from src.di import build_conversation_service, build_llm_service, build_session_pool
-from src.handlers import assistant_router, start_router, stats_router
+from src.handlers import assistant_router, history_router, start_router, stats_router
 from src.middlewares.auth import AuthMiddleware
 from src.middlewares.db_session import DbSessionMiddleware
+from src.utils.messages import INTERNAL_ERROR_MESSAGE
 
 logging.basicConfig(
     level=logging.INFO,
@@ -37,7 +40,7 @@ class ServiceInjectMiddleware:
         event: types.TelegramObject,
         data: Dict[str, Any],
     ) -> Any:
-        session = data.get("session")
+        session: AsyncSession = data["session"]
         data["conversation_service"] = build_conversation_service(
             session=session,
             llm_service=self._llm_service,
@@ -67,7 +70,26 @@ async def main() -> None:
     # Register routers (order matters: commands before plain-text assistant)
     dp.include_router(start_router)
     dp.include_router(stats_router)
+    dp.include_router(history_router)
     dp.include_router(assistant_router)
+
+    @dp.errors()
+    async def handle_error(event: ErrorEvent) -> bool:
+        logger.exception(
+            "Unhandled exception for update %s: %s",
+            event.update.update_id,
+            event.exception,
+        )
+        update = event.update
+        message: types.Message | None = None
+        if update.message:
+            message = update.message
+        elif update.callback_query and update.callback_query.message:
+            msg = update.callback_query.message
+            message = msg if isinstance(msg, types.Message) else None
+        if message is not None:
+            await message.answer(INTERNAL_ERROR_MESSAGE)
+        return True
 
     logger.info("Starting bot polling…")
     await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())

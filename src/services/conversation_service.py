@@ -9,6 +9,7 @@ from typing import Optional
 
 # local
 from src.config import settings
+from src.models.conversation import Message as MessageModel
 from src.repositories.conversation_repo import ConversationRepository
 from src.services.llm_service import LLMService, LLMServiceError
 from src.utils.messages import LLM_ERROR_FALLBACK
@@ -50,20 +51,27 @@ class ConversationService:
             user_message: The text sent by the user.
 
         Returns:
-            AI-generated response text.
+            AI-generated response text, or a human-readable fallback on LLM error.
+
+        Raises:
+            Does not propagate LLMServiceError — it is caught and converted to a fallback string.
         """
         conversation = await self._repo.get_or_create(user_id=user_id)
 
-        await self._repo.add_message(
+        # Build context from existing messages before adding the new user message,
+        # so that on LLM failure nothing is persisted (atomic save below).
+        existing_context = await self._repo.get_recent_messages(
+            conversation_id=conversation.id,
+            limit=settings.max_context_messages - 1,
+        )
+
+        # Append the incoming user message to context for LLM without persisting yet.
+        pending_user_msg = MessageModel(
             conversation_id=conversation.id,
             role="user",
             content=user_message,
         )
-
-        context = await self._repo.get_recent_messages(
-            conversation_id=conversation.id,
-            limit=settings.max_context_messages,
-        )
+        context = existing_context + [pending_user_msg]
 
         try:
             t0 = time.monotonic()
@@ -74,6 +82,12 @@ class ConversationService:
             logger.exception("LLM request failed for user_id=%s", user_id)
             return LLM_ERROR_FALLBACK
 
+        # Persist both messages only after a successful LLM response.
+        await self._repo.add_message(
+            conversation_id=conversation.id,
+            role="user",
+            content=user_message,
+        )
         await self._repo.add_message(
             conversation_id=conversation.id,
             role="assistant",
@@ -92,6 +106,9 @@ class ConversationService:
 
         Args:
             user_id: Telegram user ID.
+
+        Returns:
+            None. No-op if no active conversation exists.
         """
         conversation = await self._repo.get_active(user_id=user_id)
         if conversation:
@@ -120,6 +137,21 @@ class ConversationService:
             new_conversation.id,
         )
         return had_previous
+
+    async def get_history(self, user_id: int, limit: int = 5) -> list[dict[str, str]]:
+        """Return the last `limit` messages from the active conversation.
+
+        Args:
+            user_id: Telegram user ID.
+            limit: Number of recent messages to fetch.
+
+        Returns:
+            List of dicts with keys "role" and "content", oldest-first.
+        """
+        messages = await self._repo.get_last_messages_for_user(
+            user_id=user_id, limit=limit
+        )
+        return [{"role": msg.role, "content": msg.content} for msg in messages]
 
     async def get_stats(self, user_id: int) -> UserStats:
         """Collect aggregated statistics for the given user.

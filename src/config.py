@@ -4,6 +4,7 @@
 import logging
 
 # third-party
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 logger = logging.getLogger(__name__)
@@ -27,5 +28,13 @@ class Settings(BaseSettings):
     llm_model: str = "qwen-plus"
     max_context_messages: int = 20
 
+    @field_validator("max_context_messages")
+    @classmethod
+    def max_context_messages_must_be_positive(cls, v: int) -> int:
+        """Ensure max_context_messages is at least 1 to avoid empty LLM context."""
+        if v < 1:
+            raise ValueError("max_context_messages must be at least 1")
+        return v
 
-settings = Settings()
+
+settings = Settings()  # type: ignore[call-arg]

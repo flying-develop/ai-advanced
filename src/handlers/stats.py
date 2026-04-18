@@ -22,6 +22,7 @@ async def handle_stats(
     conversation_service: ConversationService,
 ) -> None:
     """Reply with the user's total conversation and message counts."""
+    assert message.from_user is not None  # guaranteed by AuthMiddleware
     stats = await conversation_service.get_stats(user_id=message.from_user.id)
 
     if stats.message_count == 0:

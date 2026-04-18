@@ -5,10 +5,12 @@ import logging
 
 # third-party
 from aiogram import F, Router, types
+from aiogram.enums import ChatAction
 
 # local
 from src.services.conversation_service import ConversationService
 from src.utils.messages import EMPTY_MESSAGE_PROMPT
+from src.utils.text import split_message
 
 logger = logging.getLogger(__name__)
 
@@ -28,10 +30,18 @@ async def handle_message(
         await message.answer(EMPTY_MESSAGE_PROMPT)
         return
 
+    assert message.from_user is not None  # guaranteed by AuthMiddleware
+    assert message.bot is not None  # always set by aiogram dispatcher
     logger.info("Received message from user_id=%s", message.from_user.id)
+
+    await message.bot.send_chat_action(
+        chat_id=message.chat.id,
+        action=ChatAction.TYPING,
+    )
 
     response = await conversation_service.get_ai_response(
         user_id=message.from_user.id,
         user_message=user_text,
     )
-    await message.answer(response)
+    for part in split_message(response):
+        await message.answer(part)

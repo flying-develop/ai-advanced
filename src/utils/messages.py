@@ -7,7 +7,9 @@ HELP_TEXT: str = (
     "/start — приветствие\n"
     "/help — эта справка\n"
     "/reset — сбросить историю диалога\n"
-    "/new_chat — начать новый диалог"
+    "/new_chat — начать новый диалог\n"
+    "/history — последние 5 сообщений диалога\n"
+    "/stats — твоя статистика"
 )
 
 RESET_SUCCESS: str = "История диалога сброшена. Начинаем заново!"
@@ -28,3 +30,10 @@ STATS_TEXT: str = (
 )
 
 STATS_NO_HISTORY: str = "У тебя ещё нет сообщений. Напиши что-нибудь!"
+
+INTERNAL_ERROR_MESSAGE: str = "Произошла внутренняя ошибка."
+
+HISTORY_NO_MESSAGES: str = "История пуста. Начни диалог — напиши что-нибудь!"
+
+HISTORY_USER_PREFIX: str = "👤"
+HISTORY_ASSISTANT_PREFIX: str = "🤖"
