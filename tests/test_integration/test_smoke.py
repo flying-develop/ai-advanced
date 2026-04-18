@@ -15,13 +15,14 @@ from src.services.conversation_service import ConversationService
 
 async def test_smoke_start_command_sends_welcome_text() -> None:
     """Scenario 1 — /start: handler calls message.answer with the welcome text."""
-    from src.handlers.start import handle_start, _HELP_TEXT
+    from src.handlers.start import handle_start
+    from src.utils.messages import HELP_TEXT
 
     mock_message = AsyncMock()
     await handle_start(mock_message)
 
-    mock_message.answer.assert_called_once_with(_HELP_TEXT)
-    assert "ассистент" in _HELP_TEXT.lower() or "/start" in _HELP_TEXT
+    mock_message.answer.assert_called_once_with(HELP_TEXT)
+    assert "ассистент" in HELP_TEXT.lower() or "/start" in HELP_TEXT
 
 
 async def test_smoke_ai_dialogue_messages_persisted_in_db(
