@@ -4,6 +4,7 @@
 import logging
 
 # third-party
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 logger = logging.getLogger(__name__)
@@ -26,6 +27,14 @@ class Settings(BaseSettings):
     qwen_base_url: str = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
     llm_model: str = "qwen-plus"
     max_context_messages: int = 20
+
+    @field_validator("max_context_messages")
+    @classmethod
+    def must_be_positive(cls, v: int) -> int:
+        """Ensure at least 1 message of context is sent to the LLM."""
+        if v < 1:
+            raise ValueError("max_context_messages must be at least 1")
+        return v
 
 
 settings = Settings()  # type: ignore[call-arg]
