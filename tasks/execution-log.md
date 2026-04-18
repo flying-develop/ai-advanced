@@ -95,3 +95,35 @@
 | Инвариантов нарушено | 1 (скрытый) | 1 (скрытый) | **0** |
 | Мёртвого кода | 1 функция | 1 функция | **0** |
 | Пропущенных gap'ов | 4 | 0 | **0** |
+
+---
+
+## Прогон 3 — Облачная модель на свежей ветке `day5-local-model`
+
+Ветка: `day5-local-model` от `badef5c` (состояние после day4, до day5)  
+Worktree: `/tmp/local-run`  
+Тестов на старте: 33
+
+| # | Задача | Тип | Результат | Коммит | Примечание |
+|---|--------|-----|-----------|--------|-----------|
+| 1 | /new_chat edge case | bugfix | ✅ | — | Уже в day4 |
+| 2 | typing indicator | feature | ✅ | c8c4576 | |
+| 3 | split_message | feature | ✅ | 2e3309b | 5 тестов |
+| 4 | строковые константы | refactor | ✅ | — | Уже в day4 |
+| 5 | LLM ошибка | bugfix | ✅ | 5b26e94 | атомарное сохранение |
+| 6 | /stats | feature | ✅ | — | Уже в day4 |
+| 7 | LLM timing | feature | ✅ | — | Уже в day4 |
+| 8 | mypy clean | refactor | ✅ | 2c75d20 | py.typed, 0 errors |
+| 9 | __all__ | refactor | ✅ | 030cdcc | |
+| 10 | error handler | refactor | ✅ | 8fd7042 | dp.errors() |
+| 11 | MAX_CONTEXT=0 | bugfix | ✅ | 56d0c6a | 2 теста |
+| 12 | /history | feature | ✅ | ec632e0 | handler+service+repo |
+| 13 | docstrings | docs | ✅ | d2c2d06 | |
+| 14 | CHANGELOG.md | docs | ✅ | d2c2d06 | |
+| 15 | ADR-001 | docs | ✅ | d2c2d06 | |
+
+### Метрики
+- **Тестов:** 33 → 41 (+8)
+- **mypy:** 0 errors
+- **Коммитов:** 9
+- **С первого раза:** 15/15 = 100%
