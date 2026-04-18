@@ -10,6 +10,7 @@ from aiogram.enums import ChatAction
 # local
 from src.services.conversation_service import ConversationService
 from src.utils.messages import EMPTY_MESSAGE_PROMPT
+from src.utils.text import split_message
 
 logger = logging.getLogger(__name__)
 
@@ -42,4 +43,5 @@ async def handle_message(
         user_id=message.from_user.id,
         user_message=user_text,
     )
-    await message.answer(response)
+    for part in split_message(response):
+        await message.answer(part)
