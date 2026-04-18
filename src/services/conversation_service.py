@@ -9,6 +9,7 @@ from typing import Optional
 
 # local
 from src.config import settings
+from src.models.conversation import Message as MessageModel
 from src.repositories.conversation_repo import ConversationRepository
 from src.services.llm_service import LLMService, LLMServiceError
 from src.utils.messages import LLM_ERROR_FALLBACK
@@ -65,8 +66,6 @@ class ConversationService:
         )
 
         # Append the incoming user message to context for LLM without persisting yet.
-        from src.models.conversation import Message as MessageModel  # local import to avoid circular
-
         pending_user_msg = MessageModel(
             conversation_id=conversation.id,
             role="user",
