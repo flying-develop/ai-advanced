@@ -2,10 +2,13 @@
 
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 
 from openai import OpenAI, RateLimitError, APIError
+
+_FENCE_RE = re.compile(r"^```(?:json)?\s*\n?(.*?)\n?```\s*$", re.DOTALL)
 
 logger = logging.getLogger(__name__)
 
@@ -43,14 +46,19 @@ class ConfidenceScorer:
     def __init__(self, client: OpenAI) -> None:
         self._client = client
 
-    def score(self, vacancy_text: str, extraction: dict) -> ScoringResult:
+    def score(self, vacancy_text: str, extraction: dict, model: str = "gpt-4o-mini") -> ScoringResult:
         """Return ScoringResult with status, score, uncertain_fields, and reason."""
         user_content = (
             f"Vacancy text:\n{vacancy_text}\n\n"
             f"Extracted JSON:\n{json.dumps(extraction, ensure_ascii=False, indent=2)}"
         )
 
-        raw = self._call_with_retry(user_content)
+        raw = self._call_with_retry(user_content, model=model)
+
+        raw = raw.strip()
+        m = _FENCE_RE.match(raw)
+        if m:
+            raw = m.group(1).strip()
 
         try:
             data = json.loads(raw)
@@ -70,12 +78,12 @@ class ConfidenceScorer:
         logger.debug("ConfidenceScorer: status=%s score=%.2f", status, score)
         return ScoringResult(status=status, score=score, uncertain_fields=uncertain_fields, reason=reason)
 
-    def _call_with_retry(self, user_content: str, max_retries: int = 3) -> str:
-        """Call gpt-4o-mini with exponential backoff retry."""
+    def _call_with_retry(self, user_content: str, model: str = "gpt-4o-mini", max_retries: int = 3) -> str:
+        """Call the specified model with exponential backoff retry."""
         for attempt in range(max_retries):
             try:
                 response = self._client.chat.completions.create(
-                    model="gpt-4o-mini",
+                    model=model,
                     messages=[
                         {"role": "system", "content": SYSTEM_PROMPT},
                         {"role": "user", "content": user_content},
