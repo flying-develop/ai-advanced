@@ -14,6 +14,8 @@ dependencies = [
     "pydantic-settings",
     "alembic",
     "httpx",
+    "openai>=1.0.0",
+    "python-dotenv",
 ]
 
 [project.optional-dependencies]
