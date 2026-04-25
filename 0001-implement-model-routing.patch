@@ -1,0 +1,1192 @@
+From 92428ab3ccd62c2e8c944d68e0e58f2802249f64 Mon Sep 17 00:00:00 2001
+From: Konstantin Gribovskij <flying.develop@gmail.com>
+Date: Sat, 25 Apr 2026 16:54:42 +0500
+Subject: [PATCH] implement model routing
+
+---
+ docs/day8/day8-report.md                      |  27 ++
+ docs/day8/day8-routing.md                     | 262 ++++++++++++++
+ .../scripts/confidence/confidence_scorer.py   |  18 +-
+ finetuning/scripts/inference_pipeline.py      |  37 +-
+ finetuning/scripts/parse_vacancies.py         |  41 +--
+ finetuning/scripts/routing/__init__.py        |   6 +
+ finetuning/scripts/routing/model_router.py    |  67 ++++
+ finetuning/scripts/routing/routed_pipeline.py | 330 ++++++++++++++++++
+ finetuning/scripts/routing/test_routing.py    | 180 ++++++++++
+ finetuning/scripts/utils/__init__.py          |   5 +
+ finetuning/scripts/utils/openai_utils.py      |  52 +++
+ 11 files changed, 966 insertions(+), 59 deletions(-)
+ create mode 100644 docs/day8/day8-report.md
+ create mode 100644 docs/day8/day8-routing.md
+ create mode 100644 finetuning/scripts/routing/__init__.py
+ create mode 100644 finetuning/scripts/routing/model_router.py
+ create mode 100644 finetuning/scripts/routing/routed_pipeline.py
+ create mode 100644 finetuning/scripts/routing/test_routing.py
+ create mode 100644 finetuning/scripts/utils/__init__.py
+ create mode 100644 finetuning/scripts/utils/openai_utils.py
+
+diff --git a/docs/day8/day8-report.md b/docs/day8/day8-report.md
+new file mode 100644
+index 0000000..44daf2b
+--- /dev/null
++++ b/docs/day8/day8-report.md
+@@ -0,0 +1,27 @@
++# Routing Report — Day 8
++
++```
++╔══════════════════════════════════════════════════════════════╗
++║              ROUTING REPORT — DAY 8                          ║
++╠══════════════════════════════════════════════════════════════╣
++║ Total processed:          30                                  ║
++║ OK:                       15  (50%)                               ║
++║ FAIL:                     15  (50%)                               ║
++╠══════════════════════════════════════════════════════════════╣
++║ Stayed on gpt-4o-mini:    0   (0%) — tier1 only                 ║
++║ Escalated to gpt-4o:      10  (33%)                               ║
++║   └─ rescued after esc.:  9   (90% of escalated)                 ║
++║   └─ failed after esc.:   1                                   ║
++╠══════════════════════════════════════════════════════════════╣
++║ Total API calls:          79                                  ║
++║   Tier 1 (mini) calls:    20                                  ║
++║   Tier 2 (gpt-4o) calls:  59                                  ║
++║ Avg calls per request:    2.6                                  ║
++║ Avg latency:              3.9s                                 ║
++╠══════════════════════════════════════════════════════════════╣
++║ vs Day 7 self-check:                                         ║
++║   Day 7 total calls:      [вставь вручную из day7-report]   ║
++║   Day 8 total calls:      79                                  ║
++║   Разница:                [вставь вручную]                  ║
++╚══════════════════════════════════════════════════════════════╝
++```
+\ No newline at end of file
+diff --git a/docs/day8/day8-routing.md b/docs/day8/day8-routing.md
+new file mode 100644
+index 0000000..2689713
+--- /dev/null
++++ b/docs/day8/day8-routing.md
+@@ -0,0 +1,262 @@
++# День 8 — Routing между моделями
++
++## Контекст
++
++Продолжаем пайплайн дней 6–7. Сегодня заменяем Self-check на routing:
++вместо того чтобы прогонять ту же модель повторно при UNSURE —
++эскалируем на более сильную модель.
++
++**Важно:** `SelfChecker` из дня 7 не удаляем — он остаётся как fallback.
++Routing — это новый слой поверх существующего пайплайна.
++
++## Архитектура
++
++```
++Текст вакансии
++      │
++      ▼
++┌──────────────────────────┐
++│  Router                  │
++│  выбирает стартовую      │
++│  модель по эвристикам    │
++└──────────────────────────┘
++      │
++      ▼
++┌──────────────────────────┐
++│  Tier 1: gpt-4o-mini     │  быстро, дёшево
++│  extraction + confidence │
++└──────────────────────────┘
++      │
++      ├── OK   ──────────────────────→ результат
++      │
++      ├── UNSURE ──→ ┌──────────────────────────┐
++      │              │  Tier 2: gpt-4o          │  медленно, дорого
++      │              │  повторный extraction    │
++      │              └──────────────────────────┘
++      │                      │
++      │                      ├── OK   → результат
++      │                      └── FAIL → отклонить
++      │
++      └── FAIL ─────────────────────→ отклонить
++```
++
++## Задача 1 — ModelRouter
++
++Файл: `finetuning/scripts/routing/model_router.py`
++
++```python
++class ModelRouter:
++    """
++    Определяет стартовую модель и пороги эскалации.
++
++    Эвристики выбора стартовой модели:
++    1. Длина текста: если < 100 символов → сразу gpt-4o (слишком мало данных для mini)
++    2. Язык: определяем по первым 200 символам — если смешанный → gpt-4o
++    3. Default: gpt-4o-mini
++
++    Порог эскалации:
++    - confidence score < 0.75 → эскалировать на gpt-4o
++    - статус UNSURE → эскалировать
++    - статус FAIL → не эскалировать, отклонить
++    """
++
++    TIER1_MODEL = "gpt-4o-mini"
++    TIER2_MODEL = "gpt-4o"
++    ESCALATION_THRESHOLD = 0.75
++
++    def select_initial_model(self, vacancy_text: str) -> str:
++        """
++        Возвращает название модели для первого запроса.
++        Логирует причину выбора.
++        """
++
++    def should_escalate(self, result: PipelineResult) -> bool:
++        """
++        True если нужно эскалировать на Tier 2.
++        """
++
++    def get_escalation_reason(self, result: PipelineResult) -> str:
++        """
++        Человекочитаемая причина эскалации для логов и отчёта.
++        """
++```
++
++## Задача 2 — RoutedPipeline
++
++Файл: `finetuning/scripts/routing/routed_pipeline.py`
++
++Расширяет `InferencePipeline` из дня 7, добавляя routing.
++
++```python
++@dataclass
++class RoutedResult:
++    extraction: dict | None
++    final_status: str           # OK | FAIL
++    confidence_score: float
++    initial_model: str          # какая модель обработала первой
++    escalated: bool             # была ли эскалация
++    escalation_reason: str      # почему эскалировали (или "")
++    tier1_calls: int            # вызовы gpt-4o-mini
++    tier2_calls: int            # вызовы gpt-4o
++    total_calls: int
++    latency_ms: float
++    constraint_violations: list[str]
++    constraint_warnings: list[str]
++
++
++class RoutedPipeline:
++    """
++    Метрики (накапливаются за сессию):
++    - total: int
++    - ok_count: int
++    - fail_count: int
++    - tier1_only: int       # обработано только gpt-4o-mini
++    - escalated_count: int  # ушло на gpt-4o
++    - escalated_ok: int     # после эскалации стало OK
++    - escalated_fail: int   # после эскалации всё равно FAIL
++    - total_tier1_calls: int
++    - total_tier2_calls: int
++    - total_latency_ms: float
++    """
++
++    def __init__(self, openai_client):
++        self.router = ModelRouter()
++        self.constraint_checker = ConstraintChecker()
++        self.confidence_scorer = ConfidenceScorer(openai_client)
++        # метрики...
++
++    def process(self, vacancy_text: str) -> RoutedResult:
++        """
++        Полный цикл с routing:
++        1. Router выбирает стартовую модель
++        2. Extraction на стартовой модели
++        3. ConstraintChecker
++        4. ConfidenceScorer
++        5. Если should_escalate → повторный extraction на gpt-4o
++        6. Финальный ConstraintChecker на результате Tier 2
++        """
++
++    def print_metrics(self) -> None:
++        """Печатает итоговую таблицу."""
++```
++
++## Задача 3 — Утилита (рефакторинг)
++
++Файл: `finetuning/scripts/utils/openai_utils.py`
++
++`_extract_with_retry` продублирован в `parse_vacancies.py` и `inference_pipeline.py`.
++Вынеси в общую утилиту:
++
++```python
++def call_with_retry(
++    client,
++    messages: list[dict],
++    model: str = "gpt-4o-mini",
++    temperature: float = 0,
++    max_tokens: int = 512,
++    max_retries: int = 3,
++) -> str:
++    """OpenAI chat completion с экспоненциальным backoff."""
++```
++
++Обнови `inference_pipeline.py` и `parse_vacancies.py` — импортируй из утилиты
++вместо дублированного кода.
++
++## Задача 4 — Тест routing
++
++Файл: `finetuning/scripts/routing/test_routing.py`
++
++Прогони 30 вакансий — те же категории что в день 7, чтобы можно было сравнить:
++
++```python
++SIMPLE_CASES   = [взять из eval.jsonl первые 10]
++EDGE_CASES     = [те же 10 из дня 7]
++NOISY_CASES    = [те же 10 из дня 7]
++```
++
++Для каждого запроса выводи:
++
++```
++=== Категория: Простые ===
++[ 1/10] OK   | mini→OK   | score=0.91 | calls=2 (2+0) | 1.1s
++[ 2/10] OK   | mini→gpt4 | score=0.95 | calls=4 (2+2) | 3.2s | escalated: UNSURE score=0.71
++[ 3/10] FAIL | mini→FAIL | score=0.31 | calls=2 (2+0) | 0.9s
++```
++
++Формат строки:
++```
++[N/10] STATUS | ROUTE | score=X.XX | calls=N (tier1+tier2) | Xs | [причина эскалации]
++```
++
++Где ROUTE:
++- `mini→OK` — обработано gpt-4o-mini, результат OK
++- `mini→gpt4` — эскалировано на gpt-4o
++- `gpt4→OK` — роутер сразу выбрал gpt-4o (короткий текст / смешанный язык)
++- `mini→FAIL` — gpt-4o-mini не справился, не эскалировали
++
++## Задача 5 — Сравнительный отчёт
++
++В конце `test_routing.py` выведи и сохрани в `docs/day8/day8-report.md`:
++
++```
++╔══════════════════════════════════════════════════════════════╗
++║              ROUTING REPORT — DAY 8                          ║
++╠══════════════════════════════════════════════════════════════╣
++║ Total processed:          30                                 ║
++║ OK:                       N  (XX%)                          ║
++║ FAIL:                     N  (XX%)                          ║
++╠══════════════════════════════════════════════════════════════╣
++║ Stayed on gpt-4o-mini:    N  (XX%) — tier1 only             ║
++║ Escalated to gpt-4o:      N  (XX%)                          ║
++║   └─ rescued after esc.:  N  (XX% of escalated)             ║
++║   └─ failed after esc.:   N                                 ║
++╠══════════════════════════════════════════════════════════════╣
++║ Total API calls:          N                                  ║
++║   Tier 1 (mini) calls:    N                                  ║
++║   Tier 2 (gpt-4o) calls:  N                                  ║
++║ Avg calls per request:    X.X                                ║
++║ Avg latency:              X.Xs                               ║
++╠══════════════════════════════════════════════════════════════╣
++║ vs Day 7 self-check:                                         ║
++║   Day 7 total calls:      [вставь вручную из day7-report]   ║
++║   Day 8 total calls:      N                                  ║
++║   Разница:                +N / -N                            ║
++╚══════════════════════════════════════════════════════════════╝
++```
++
++Последний блок сравнения с днём 7 заполни вручную после запуска — это для видео.
++
++## Структура файлов
++
++```
++finetuning/
++└── scripts/
++    ├── routing/
++    │   ├── __init__.py
++    │   ├── model_router.py
++    │   ├── routed_pipeline.py
++    │   └── test_routing.py
++    └── utils/
++        ├── __init__.py
++        └── openai_utils.py
++docs/
++└── day8/
++    └── day8-report.md
++```
++
++## Технические требования
++
++- Python 3.12, `openai>=1.0.0`, `python-dotenv`
++- Все результаты через `@dataclass`
++- `temperature=0` для обоих tier
++- Retry логику берём из `utils/openai_utils.py` (новая утилита)
++- API ключ из `.env`
++
++## Порядок выполнения
++
++1. Создай `utils/openai_utils.py`, перенеси retry-логику
++2. Обнови `inference_pipeline.py` и `parse_vacancies.py` — используй утилиту
++3. Реализуй `ModelRouter`
++4. Реализуй `RoutedPipeline`
++5. Запусти `test_routing.py`
++6. Заполни блок сравнения в `day8-report.md` вручную
+\ No newline at end of file
+diff --git a/finetuning/scripts/confidence/confidence_scorer.py b/finetuning/scripts/confidence/confidence_scorer.py
+index 068998b..35863d1 100644
+--- a/finetuning/scripts/confidence/confidence_scorer.py
++++ b/finetuning/scripts/confidence/confidence_scorer.py
+@@ -2,11 +2,14 @@
+ 
+ import json
+ import logging
++import re
+ import time
+ from dataclasses import dataclass, field
+ 
+ from openai import OpenAI, RateLimitError, APIError
+ 
++_FENCE_RE = re.compile(r"^```(?:json)?\s*\n?(.*?)\n?```\s*$", re.DOTALL)
++
+ logger = logging.getLogger(__name__)
+ 
+ SYSTEM_PROMPT = (
+@@ -43,14 +46,19 @@ class ConfidenceScorer:
+     def __init__(self, client: OpenAI) -> None:
+         self._client = client
+ 
+-    def score(self, vacancy_text: str, extraction: dict) -> ScoringResult:
++    def score(self, vacancy_text: str, extraction: dict, model: str = "gpt-4o-mini") -> ScoringResult:
+         """Return ScoringResult with status, score, uncertain_fields, and reason."""
+         user_content = (
+             f"Vacancy text:\n{vacancy_text}\n\n"
+             f"Extracted JSON:\n{json.dumps(extraction, ensure_ascii=False, indent=2)}"
+         )
+ 
+-        raw = self._call_with_retry(user_content)
++        raw = self._call_with_retry(user_content, model=model)
++
++        raw = raw.strip()
++        m = _FENCE_RE.match(raw)
++        if m:
++            raw = m.group(1).strip()
+ 
+         try:
+             data = json.loads(raw)
+@@ -70,12 +78,12 @@ class ConfidenceScorer:
+         logger.debug("ConfidenceScorer: status=%s score=%.2f", status, score)
+         return ScoringResult(status=status, score=score, uncertain_fields=uncertain_fields, reason=reason)
+ 
+-    def _call_with_retry(self, user_content: str, max_retries: int = 3) -> str:
+-        """Call gpt-4o-mini with exponential backoff retry."""
++    def _call_with_retry(self, user_content: str, model: str = "gpt-4o-mini", max_retries: int = 3) -> str:
++        """Call the specified model with exponential backoff retry."""
+         for attempt in range(max_retries):
+             try:
+                 response = self._client.chat.completions.create(
+-                    model="gpt-4o-mini",
++                    model=model,
+                     messages=[
+                         {"role": "system", "content": SYSTEM_PROMPT},
+                         {"role": "user", "content": user_content},
+diff --git a/finetuning/scripts/inference_pipeline.py b/finetuning/scripts/inference_pipeline.py
+index 5af3cf9..5f8f303 100644
+--- a/finetuning/scripts/inference_pipeline.py
++++ b/finetuning/scripts/inference_pipeline.py
+@@ -5,9 +5,10 @@ import logging
+ import time
+ from dataclasses import dataclass, field
+ 
+-from openai import OpenAI, RateLimitError, APIError
++from openai import OpenAI
+ 
+ from confidence import ConstraintChecker, ConfidenceScorer, SelfChecker
++from utils.openai_utils import call_with_retry
+ 
+ logger = logging.getLogger(__name__)
+ 
+@@ -239,26 +240,14 @@ class InferencePipeline:
+ 
+     def _extract_with_retry(self, vacancy_text: str, max_retries: int = 3) -> str:
+         """Call gpt-4o-mini for extraction with exponential backoff retry."""
+-        for attempt in range(max_retries):
+-            try:
+-                response = self._client.chat.completions.create(
+-                    model="gpt-4o-mini",
+-                    messages=[
+-                        {"role": "system", "content": SYSTEM_PROMPT},
+-                        {"role": "user", "content": EXTRACTION_PROMPT + vacancy_text},
+-                    ],
+-                    temperature=0,
+-                    max_tokens=512,
+-                )
+-                return response.choices[0].message.content or ""
+-            except RateLimitError:
+-                wait = 2 ** attempt * 5
+-                logger.warning("Rate limit hit, waiting %ds (attempt %d/%d)", wait, attempt + 1, max_retries)
+-                time.sleep(wait)
+-            except APIError as e:
+-                wait = 2 ** attempt * 2
+-                logger.warning("API error: %s, waiting %ds (attempt %d/%d)", e, wait, attempt + 1, max_retries)
+-                if attempt == max_retries - 1:
+-                    raise
+-                time.sleep(wait)
+-        raise RuntimeError("Max retries exceeded")
++        return call_with_retry(
++            self._client,
++            messages=[
++                {"role": "system", "content": SYSTEM_PROMPT},
++                {"role": "user", "content": EXTRACTION_PROMPT + vacancy_text},
++            ],
++            model="gpt-4o-mini",
++            temperature=0,
++            max_tokens=512,
++            max_retries=max_retries,
++        )
+diff --git a/finetuning/scripts/parse_vacancies.py b/finetuning/scripts/parse_vacancies.py
+index eb10b76..c58aa21 100644
+--- a/finetuning/scripts/parse_vacancies.py
++++ b/finetuning/scripts/parse_vacancies.py
+@@ -4,14 +4,16 @@ import json
+ import logging
+ import re
+ import sys
+-import time
+ from pathlib import Path
+ 
+ from dotenv import load_dotenv
+-from openai import OpenAI, RateLimitError, APIError
++from openai import OpenAI
+ 
+ load_dotenv()
+ 
++sys.path.insert(0, str(Path(__file__).parent))
++from utils.openai_utils import call_with_retry
++
+ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+ logger = logging.getLogger(__name__)
+ 
+@@ -68,33 +70,6 @@ def clean_vacancy(text: str) -> str:
+     return text.strip()
+ 
+ 
+-def call_openai_with_retry(client: OpenAI, vacancy_text: str, max_retries: int = 3) -> str:
+-    """Call gpt-4o-mini with exponential backoff retry."""
+-    for attempt in range(max_retries):
+-        try:
+-            response = client.chat.completions.create(
+-                model="gpt-4o-mini",
+-                messages=[
+-                    {"role": "system", "content": SYSTEM_PROMPT},
+-                    {"role": "user", "content": EXTRACTION_PROMPT + vacancy_text},
+-                ],
+-                temperature=0,
+-                max_tokens=512,
+-            )
+-            return response.choices[0].message.content or ""
+-        except RateLimitError:
+-            wait = 2 ** attempt * 5
+-            logger.warning("Rate limit hit, waiting %ds (attempt %d/%d)", wait, attempt + 1, max_retries)
+-            time.sleep(wait)
+-        except APIError as e:
+-            wait = 2 ** attempt * 2
+-            logger.warning("API error: %s, waiting %ds (attempt %d/%d)", e, wait, attempt + 1, max_retries)
+-            if attempt == max_retries - 1:
+-                raise
+-            time.sleep(wait)
+-    raise RuntimeError("Max retries exceeded")
+-
+-
+ def make_record(vacancy_text: str, extraction_json: str) -> dict:
+     """Build a JSONL messages record."""
+     return {
+@@ -125,7 +100,13 @@ def main() -> None:
+                 logger.warning("Vacancy %d too short after cleaning, skipping", i)
+                 continue
+             try:
+-                extraction = call_openai_with_retry(client, cleaned)
++                extraction = call_with_retry(
++                    client,
++                    messages=[
++                        {"role": "system", "content": SYSTEM_PROMPT},
++                        {"role": "user", "content": EXTRACTION_PROMPT + cleaned},
++                    ],
++                )
+                 json.loads(extraction)  # validate JSON
+                 record = make_record(cleaned, extraction)
+                 out.write(json.dumps(record, ensure_ascii=False) + "\n")
+diff --git a/finetuning/scripts/routing/__init__.py b/finetuning/scripts/routing/__init__.py
+new file mode 100644
+index 0000000..3d7fe09
+--- /dev/null
++++ b/finetuning/scripts/routing/__init__.py
+@@ -0,0 +1,6 @@
++"""Model routing package — selects models and escalates on low confidence."""
++
++from model_router import ModelRouter
++from routed_pipeline import RoutedPipeline, RoutedResult
++
++__all__ = ["ModelRouter", "RoutedPipeline", "RoutedResult"]
+diff --git a/finetuning/scripts/routing/model_router.py b/finetuning/scripts/routing/model_router.py
+new file mode 100644
+index 0000000..37545cf
+--- /dev/null
++++ b/finetuning/scripts/routing/model_router.py
+@@ -0,0 +1,67 @@
++"""Model router — selects starting model and escalation policy based on heuristics."""
++
++import logging
++import re
++
++logger = logging.getLogger(__name__)
++
++
++class ModelRouter:
++    """Determines starting model and escalation thresholds.
++
++    Starting model heuristics:
++    1. Text length < 100 chars → gpt-4o (too little data for mini to be reliable)
++    2. Mixed language in first 200 chars → gpt-4o
++    3. Default → gpt-4o-mini
++
++    Escalation policy:
++    - confidence score < 0.75 → escalate to gpt-4o
++    - status UNSURE → escalate
++    - status FAIL → reject, do not escalate
++    """
++
++    TIER1_MODEL = "gpt-4o-mini"
++    TIER2_MODEL = "gpt-4o"
++    ESCALATION_THRESHOLD = 0.75
++
++    def select_initial_model(self, vacancy_text: str) -> str:
++        """Return model name for the first request. Logs selection reason."""
++        if len(vacancy_text) < 100:
++            logger.info(
++                "Router: %s — text too short (%d chars)", self.TIER2_MODEL, len(vacancy_text)
++            )
++            return self.TIER2_MODEL
++
++        if self._is_mixed_language(vacancy_text):
++            logger.info("Router: %s — mixed language detected", self.TIER2_MODEL)
++            return self.TIER2_MODEL
++
++        logger.info("Router: %s — default", self.TIER1_MODEL)
++        return self.TIER1_MODEL
++
++    def should_escalate(self, score: float, status: str) -> bool:
++        """True if result should be escalated to Tier 2."""
++        if status == "FAIL":
++            return False
++        return status == "UNSURE" or score < self.ESCALATION_THRESHOLD
++
++    def get_escalation_reason(self, score: float, status: str) -> str:
++        """Human-readable escalation reason for logs and reports."""
++        if status == "UNSURE":
++            return f"UNSURE score={score:.2f}"
++        if score < self.ESCALATION_THRESHOLD:
++            return f"low confidence score={score:.2f}"
++        return ""
++
++    def _is_mixed_language(self, text: str) -> bool:
++        """True if first 200 chars contain significant amounts of both Cyrillic and Latin."""
++        sample = text[:200]
++        cyrillic = len(re.findall(r"[а-яёА-ЯЁ]", sample))
++        latin = len(re.findall(r"[a-zA-Z]", sample))
++        total = cyrillic + latin
++        if total < 20:
++            return False
++        latin_ratio = latin / total
++        cyrillic_ratio = cyrillic / total
++        # 0.30 false-positives on Russian text with English tech terms (~35% Latin)
++        return latin_ratio > 0.40 and cyrillic_ratio > 0.40
+diff --git a/finetuning/scripts/routing/routed_pipeline.py b/finetuning/scripts/routing/routed_pipeline.py
+new file mode 100644
+index 0000000..a67a6ad
+--- /dev/null
++++ b/finetuning/scripts/routing/routed_pipeline.py
+@@ -0,0 +1,330 @@
++"""Routed inference pipeline — extends day 7 pipeline with model routing and escalation."""
++
++import json
++import logging
++import sys
++import time
++from dataclasses import dataclass, field
++from pathlib import Path
++
++# Make scripts/ and routing/ importable
++_scripts = Path(__file__).parent.parent
++_routing = Path(__file__).parent
++for _p in [str(_scripts), str(_routing)]:
++    if _p not in sys.path:
++        sys.path.insert(0, _p)
++
++from openai import OpenAI
++
++from confidence import ConstraintChecker, ConfidenceScorer
++from inference_pipeline import SYSTEM_PROMPT, EXTRACTION_PROMPT
++from model_router import ModelRouter
++from utils.openai_utils import call_with_retry, strip_json_fences
++
++logger = logging.getLogger(__name__)
++
++
++@dataclass
++class RoutedResult:
++    """Full result of processing one vacancy through the routed pipeline."""
++
++    extraction: dict | None
++    final_status: str  # "OK" | "FAIL"
++    confidence_score: float
++    initial_model: str
++    escalated: bool
++    escalation_reason: str
++    tier1_calls: int
++    tier2_calls: int
++    total_calls: int
++    latency_ms: float
++    constraint_violations: list[str] = field(default_factory=list)
++    constraint_warnings: list[str] = field(default_factory=list)
++
++
++class RoutedPipeline:
++    """Extraction pipeline with model routing and tier escalation.
++
++    Session metrics accumulated:
++    - total, ok_count, fail_count
++    - tier1_only: processed on gpt-4o-mini only
++    - escalated_count: sent to gpt-4o
++    - escalated_ok: rescued after escalation
++    - escalated_fail: still failed after escalation
++    - total_tier1_calls, total_tier2_calls
++    - total_latency_ms
++    """
++
++    def __init__(self, openai_client: OpenAI) -> None:
++        self._client = openai_client
++        self.router = ModelRouter()
++        self.constraint_checker = ConstraintChecker()
++        self.confidence_scorer = ConfidenceScorer(openai_client)
++
++        self.total: int = 0
++        self.ok_count: int = 0
++        self.fail_count: int = 0
++        self.tier1_only: int = 0
++        self.escalated_count: int = 0
++        self.escalated_ok: int = 0
++        self.escalated_fail: int = 0
++        self.total_tier1_calls: int = 0
++        self.total_tier2_calls: int = 0
++        self.total_latency_ms: float = 0.0
++
++    def process(self, vacancy_text: str) -> RoutedResult:
++        """Full routing cycle: select model → extract → check → score → escalate if needed."""
++        start = time.monotonic()
++        tier1_calls = 0
++        tier2_calls = 0
++
++        # Step 1: Router selects starting model
++        initial_model = self.router.select_initial_model(vacancy_text)
++        is_tier1_initial = initial_model == ModelRouter.TIER1_MODEL
++
++        extraction_messages = [
++            {"role": "system", "content": SYSTEM_PROMPT},
++            {"role": "user", "content": EXTRACTION_PROMPT + vacancy_text},
++        ]
++
++        # Step 2: Extraction on initial model
++        extraction_raw = call_with_retry(self._client, extraction_messages, model=initial_model)
++        if is_tier1_initial:
++            tier1_calls += 1
++        else:
++            tier2_calls += 1
++
++        try:
++            extraction = json.loads(strip_json_fences(extraction_raw))
++        except json.JSONDecodeError:
++            return self._build_result(
++                extraction=None,
++                final_status="FAIL",
++                confidence_score=0.0,
++                initial_model=initial_model,
++                escalated=False,
++                escalation_reason="",
++                tier1_calls=tier1_calls,
++                tier2_calls=tier2_calls,
++                elapsed_ms=(time.monotonic() - start) * 1000,
++                violations=[],
++                warnings=[],
++            )
++
++        # Step 3: Constraint check (no API)
++        constraint = self.constraint_checker.check(extraction)
++        if constraint.status == "FAIL":
++            return self._build_result(
++                extraction=None,
++                final_status="FAIL",
++                confidence_score=0.0,
++                initial_model=initial_model,
++                escalated=False,
++                escalation_reason="",
++                tier1_calls=tier1_calls,
++                tier2_calls=tier2_calls,
++                elapsed_ms=(time.monotonic() - start) * 1000,
++                violations=constraint.violations,
++                warnings=constraint.warnings,
++            )
++
++        # Step 4: Confidence scoring on initial model
++        scoring = self.confidence_scorer.score(vacancy_text, extraction, model=initial_model)
++        if is_tier1_initial:
++            tier1_calls += 1
++        else:
++            tier2_calls += 1
++
++        # gpt-4o was initial: escalation not possible; UNSURE → OK (gpt-4o is our ceiling)
++        if not is_tier1_initial:
++            final_status = "FAIL" if scoring.status == "FAIL" else "OK"
++            return self._build_result(
++                extraction=extraction if final_status == "OK" else None,
++                final_status=final_status,
++                confidence_score=scoring.score,
++                initial_model=initial_model,
++                escalated=False,
++                escalation_reason="",
++                tier1_calls=tier1_calls,
++                tier2_calls=tier2_calls,
++                elapsed_ms=(time.monotonic() - start) * 1000,
++                violations=constraint.violations,
++                warnings=constraint.warnings,
++            )
++
++        # mini was initial but no escalation needed (OK or FAIL from scorer)
++        if not self.router.should_escalate(scoring.score, scoring.status):
++            final_status = "OK" if scoring.status == "OK" else "FAIL"
++            return self._build_result(
++                extraction=extraction if final_status == "OK" else None,
++                final_status=final_status,
++                confidence_score=scoring.score,
++                initial_model=initial_model,
++                escalated=False,
++                escalation_reason="",
++                tier1_calls=tier1_calls,
++                tier2_calls=tier2_calls,
++                elapsed_ms=(time.monotonic() - start) * 1000,
++                violations=constraint.violations,
++                warnings=constraint.warnings,
++            )
++
++        # Step 5: Escalate to gpt-4o
++        escalation_reason = self.router.get_escalation_reason(scoring.score, scoring.status)
++        logger.info("Escalating to %s: %s", ModelRouter.TIER2_MODEL, escalation_reason)
++
++        tier2_raw = call_with_retry(
++            self._client, extraction_messages, model=ModelRouter.TIER2_MODEL
++        )
++        tier2_calls += 1
++
++        try:
++            tier2_extraction = json.loads(strip_json_fences(tier2_raw))
++        except json.JSONDecodeError:
++            return self._build_result(
++                extraction=None,
++                final_status="FAIL",
++                confidence_score=0.0,
++                initial_model=initial_model,
++                escalated=True,
++                escalation_reason=escalation_reason,
++                tier1_calls=tier1_calls,
++                tier2_calls=tier2_calls,
++                elapsed_ms=(time.monotonic() - start) * 1000,
++                violations=[],
++                warnings=[],
++            )
++
++        # Step 6: Final constraint check on tier 2 result
++        tier2_constraint = self.constraint_checker.check(tier2_extraction)
++        if tier2_constraint.status == "FAIL":
++            return self._build_result(
++                extraction=None,
++                final_status="FAIL",
++                confidence_score=0.0,
++                initial_model=initial_model,
++                escalated=True,
++                escalation_reason=escalation_reason,
++                tier1_calls=tier1_calls,
++                tier2_calls=tier2_calls,
++                elapsed_ms=(time.monotonic() - start) * 1000,
++                violations=tier2_constraint.violations,
++                warnings=tier2_constraint.warnings,
++            )
++
++        # Confidence scoring on tier 2 result
++        tier2_scoring = self.confidence_scorer.score(
++            vacancy_text, tier2_extraction, model=ModelRouter.TIER2_MODEL
++        )
++        tier2_calls += 1
++
++        # gpt-4o is our ceiling: UNSURE → OK, only hard FAIL rejects
++        final_status = "FAIL" if tier2_scoring.status == "FAIL" else "OK"
++        return self._build_result(
++            extraction=tier2_extraction if final_status == "OK" else None,
++            final_status=final_status,
++            confidence_score=tier2_scoring.score,
++            initial_model=initial_model,
++            escalated=True,
++            escalation_reason=escalation_reason,
++            tier1_calls=tier1_calls,
++            tier2_calls=tier2_calls,
++            elapsed_ms=(time.monotonic() - start) * 1000,
++            violations=tier2_constraint.violations,
++            warnings=tier2_constraint.warnings,
++        )
++
++    def get_metrics(self) -> dict:
++        """Return accumulated session metrics."""
++        return {
++            "total": self.total,
++            "ok_count": self.ok_count,
++            "fail_count": self.fail_count,
++            "tier1_only": self.tier1_only,
++            "escalated_count": self.escalated_count,
++            "escalated_ok": self.escalated_ok,
++            "escalated_fail": self.escalated_fail,
++            "total_tier1_calls": self.total_tier1_calls,
++            "total_tier2_calls": self.total_tier2_calls,
++            "total_calls": self.total_tier1_calls + self.total_tier2_calls,
++            "avg_calls": (self.total_tier1_calls + self.total_tier2_calls) / max(self.total, 1),
++            "avg_latency_ms": self.total_latency_ms / max(self.total, 1),
++        }
++
++    def print_metrics(self) -> None:
++        """Print formatted metrics table."""
++        m = self.get_metrics()
++        total = m["total"] or 1
++        ok_pct = m["ok_count"] / total * 100
++        fail_pct = m["fail_count"] / total * 100
++        tier1_pct = m["tier1_only"] / total * 100
++        esc_pct = m["escalated_count"] / total * 100
++        esc_ok_pct = m["escalated_ok"] / max(m["escalated_count"], 1) * 100
++        avg_latency_s = m["avg_latency_ms"] / 1000
++
++        print("╔══════════════════════════════════════════════════════════════╗")
++        print("║              ROUTING REPORT — DAY 8                          ║")
++        print("╠══════════════════════════════════════════════════════════════╣")
++        print(f"║ Total processed:          {m['total']:<36}║")
++        print(f"║ OK:                       {m['ok_count']:<3} ({ok_pct:.0f}%){'':31}║")
++        print(f"║ FAIL:                     {m['fail_count']:<3} ({fail_pct:.0f}%){'':31}║")
++        print("╠══════════════════════════════════════════════════════════════╣")
++        print(f"║ Stayed on gpt-4o-mini:    {m['tier1_only']:<3} ({tier1_pct:.0f}%) — tier1 only{'':17}║")
++        print(f"║ Escalated to gpt-4o:      {m['escalated_count']:<3} ({esc_pct:.0f}%){'':31}║")
++        print(f"║   └─ rescued after esc.:  {m['escalated_ok']:<3} ({esc_ok_pct:.0f}% of escalated){'':17}║")
++        print(f"║   └─ failed after esc.:   {m['escalated_fail']:<36}║")
++        print("╠══════════════════════════════════════════════════════════════╣")
++        print(f"║ Total API calls:          {m['total_calls']:<36}║")
++        print(f"║   Tier 1 (mini) calls:    {m['total_tier1_calls']:<36}║")
++        print(f"║   Tier 2 (gpt-4o) calls:  {m['total_tier2_calls']:<36}║")
++        print(f"║ Avg calls per request:    {m['avg_calls']:.1f}{'':34}║")
++        print(f"║ Avg latency:              {avg_latency_s:.1f}s{'':33}║")
++        print("╚══════════════════════════════════════════════════════════════╝")
++
++    def _build_result(
++        self,
++        extraction: dict | None,
++        final_status: str,
++        confidence_score: float,
++        initial_model: str,
++        escalated: bool,
++        escalation_reason: str,
++        tier1_calls: int,
++        tier2_calls: int,
++        elapsed_ms: float,
++        violations: list[str],
++        warnings: list[str],
++    ) -> RoutedResult:
++        self.total += 1
++        self.total_latency_ms += elapsed_ms
++        self.total_tier1_calls += tier1_calls
++        self.total_tier2_calls += tier2_calls
++
++        if final_status == "OK":
++            self.ok_count += 1
++        else:
++            self.fail_count += 1
++
++        if escalated:
++            self.escalated_count += 1
++            if final_status == "OK":
++                self.escalated_ok += 1
++            else:
++                self.escalated_fail += 1
++        elif initial_model == ModelRouter.TIER1_MODEL:
++            self.tier1_only += 1
++
++        return RoutedResult(
++            extraction=extraction,
++            final_status=final_status,
++            confidence_score=confidence_score,
++            initial_model=initial_model,
++            escalated=escalated,
++            escalation_reason=escalation_reason,
++            tier1_calls=tier1_calls,
++            tier2_calls=tier2_calls,
++            total_calls=tier1_calls + tier2_calls,
++            latency_ms=elapsed_ms,
++            constraint_violations=violations,
++            constraint_warnings=warnings,
++        )
+diff --git a/finetuning/scripts/routing/test_routing.py b/finetuning/scripts/routing/test_routing.py
+new file mode 100644
+index 0000000..a9a4c9d
+--- /dev/null
++++ b/finetuning/scripts/routing/test_routing.py
+@@ -0,0 +1,180 @@
++"""Test routing pipeline on 30 vacancies: 10 simple, 10 edge, 10 noisy."""
++
++import json
++import logging
++import sys
++from pathlib import Path
++
++from dotenv import load_dotenv
++from openai import OpenAI
++
++load_dotenv()
++
++_scripts = Path(__file__).parent.parent
++_routing = Path(__file__).parent
++for _p in [str(_scripts), str(_routing)]:
++    if _p not in sys.path:
++        sys.path.insert(0, _p)
++
++from model_router import ModelRouter
++from routed_pipeline import RoutedPipeline, RoutedResult
++
++logging.basicConfig(level=logging.WARNING, format="%(asctime)s %(levelname)s %(message)s")
++logger = logging.getLogger(__name__)
++
++EVAL_FILE = Path("finetuning/data/eval.jsonl")
++REPORT_PATH = Path("docs/day8/day8-report.md")
++
++EDGE_CASES = [
++    "Ищем крутого разраба. Зарплата: обсуждается. Опыт: желателен.",
++    "Senior/Lead Python developer needed. Remote possible. Salary DOE.",
++    "Fullstack developer (PHP или Python или JS — на твоё усмотрение).",
++    "Стажёр-разработчик. Опыт от 3 лет. Зарплата от 0 до рыночной.",
++    "Backend engineer, любой уровень, главное горящие глаза.",
++    "We need a rockstar ninja developer. Competitive salary. Skills: everything.",
++    "Разработчик (возможно junior, возможно senior — посмотрим).",
++    "Python/PHP/JS dev, офис или удалёнка, зарплата белая серая.",
++    "AI Engineer — опыт с нейросетями приветствуется, не обязателен.",
++    "Developer wanted. Stack TBD. Start ASAP.",
++]
++
++NOISY_CASES = [
++    "Продам гараж. 500 000 руб. Торг уместен. Звонить после 18:00.",
++    "Lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod.",
++    "",
++    "a",
++    "СРОЧНО!!! Требуется ВСЁ И ВСЕ!!! Зарплата ОГРОМНАЯ!!! Пиши в личку!!!",
++    "Куплю волосы дорого. Цвет любой. Длина от 30см.",
++    "Meeting notes: discussed Q3 roadmap, decided to postpone feature X.",
++    "Ищу репетитора по математике для ребёнка 10 лет.",
++    "Сдам квартиру. 2 комнаты. Метро Сокол. 45 000 в месяц.",
++    "Error 404: page not found. Please check the URL and try again.",
++]
++
++
++def load_simple_cases() -> list[str]:
++    """Load first 10 vacancy texts from eval.jsonl."""
++    cases = []
++    with EVAL_FILE.open(encoding="utf-8") as f:
++        for line in f:
++            line = line.strip()
++            if not line:
++                continue
++            record = json.loads(line)
++            for msg in record.get("messages", []):
++                if msg.get("role") == "user":
++                    cases.append(msg["content"])
++                    break
++            if len(cases) >= 10:
++                break
++    return cases
++
++
++def _route_label(result: RoutedResult) -> str:
++    """Format route string for output."""
++    if result.initial_model == ModelRouter.TIER1_MODEL:
++        if result.escalated:
++            return "mini→gpt4"
++        return "mini→OK" if result.final_status == "OK" else "mini→FAIL"
++    return "gpt4→OK" if result.final_status == "OK" else "gpt4→FAIL"
++
++
++def run_category(pipeline: RoutedPipeline, label: str, cases: list[str]) -> list[dict]:
++    """Run pipeline on all cases in a category and print per-item results."""
++    print(f"\n=== Категория: {label} ===")
++    results = []
++    for i, text in enumerate(cases, 1):
++        result = pipeline.process(text)
++        route = _route_label(result)
++        latency_s = result.latency_ms / 1000
++        esc_info = f" | escalated: {result.escalation_reason}" if result.escalated else ""
++        print(
++            f"[{i:2d}/{len(cases)}] {result.final_status:<4} | "
++            f"{route:<10} | "
++            f"score={result.confidence_score:.2f} | "
++            f"calls={result.total_calls} ({result.tier1_calls}+{result.tier2_calls}) | "
++            f"{latency_s:.1f}s"
++            f"{esc_info}"
++        )
++        results.append(
++            {
++                "index": i,
++                "category": label,
++                "status": result.final_status,
++                "route": route,
++                "score": result.confidence_score,
++                "tier1_calls": result.tier1_calls,
++                "tier2_calls": result.tier2_calls,
++                "total_calls": result.total_calls,
++                "latency_s": latency_s,
++                "escalated": result.escalated,
++                "escalation_reason": result.escalation_reason,
++            }
++        )
++    return results
++
++
++def build_report(pipeline: RoutedPipeline) -> str:
++    """Build ASCII report string."""
++    m = pipeline.get_metrics()
++    total = m["total"] or 1
++    ok_pct = m["ok_count"] / total * 100
++    fail_pct = m["fail_count"] / total * 100
++    tier1_pct = m["tier1_only"] / total * 100
++    esc_pct = m["escalated_count"] / total * 100
++    esc_ok_pct = m["escalated_ok"] / max(m["escalated_count"], 1) * 100
++    avg_latency_s = m["avg_latency_ms"] / 1000
++
++    lines = [
++        "# Routing Report — Day 8\n",
++        "```",
++        "╔══════════════════════════════════════════════════════════════╗",
++        "║              ROUTING REPORT — DAY 8                          ║",
++        "╠══════════════════════════════════════════════════════════════╣",
++        f"║ Total processed:          {m['total']:<36}║",
++        f"║ OK:                       {m['ok_count']:<3} ({ok_pct:.0f}%){'':31}║",
++        f"║ FAIL:                     {m['fail_count']:<3} ({fail_pct:.0f}%){'':31}║",
++        "╠══════════════════════════════════════════════════════════════╣",
++        f"║ Stayed on gpt-4o-mini:    {m['tier1_only']:<3} ({tier1_pct:.0f}%) — tier1 only{'':17}║",
++        f"║ Escalated to gpt-4o:      {m['escalated_count']:<3} ({esc_pct:.0f}%){'':31}║",
++        f"║   └─ rescued after esc.:  {m['escalated_ok']:<3} ({esc_ok_pct:.0f}% of escalated){'':17}║",
++        f"║   └─ failed after esc.:   {m['escalated_fail']:<36}║",
++        "╠══════════════════════════════════════════════════════════════╣",
++        f"║ Total API calls:          {m['total_calls']:<36}║",
++        f"║   Tier 1 (mini) calls:    {m['total_tier1_calls']:<36}║",
++        f"║   Tier 2 (gpt-4o) calls:  {m['total_tier2_calls']:<36}║",
++        f"║ Avg calls per request:    {m['avg_calls']:.1f}{'':34}║",
++        f"║ Avg latency:              {avg_latency_s:.1f}s{'':33}║",
++        "╠══════════════════════════════════════════════════════════════╣",
++        "║ vs Day 7 self-check:                                         ║",
++        "║   Day 7 total calls:      [вставь вручную из day7-report]   ║",
++        f"║   Day 8 total calls:      {m['total_calls']:<36}║",
++        "║   Разница:                [вставь вручную]                  ║",
++        "╚══════════════════════════════════════════════════════════════╝",
++        "```",
++    ]
++    return "\n".join(lines)
++
++
++def main() -> None:
++    """Run all 30 test cases and save report."""
++    client = OpenAI()
++    pipeline = RoutedPipeline(client)
++
++    simple_cases = load_simple_cases()
++
++    run_category(pipeline, "Простые", simple_cases)
++    run_category(pipeline, "Пограничные", EDGE_CASES)
++    run_category(pipeline, "Сложные/шумные", NOISY_CASES)
++
++    print("\n")
++    pipeline.print_metrics()
++
++    report_text = build_report(pipeline)
++    REPORT_PATH.parent.mkdir(parents=True, exist_ok=True)
++    REPORT_PATH.write_text(report_text, encoding="utf-8")
++    print(f"\nReport saved → {REPORT_PATH}")
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/finetuning/scripts/utils/__init__.py b/finetuning/scripts/utils/__init__.py
+new file mode 100644
+index 0000000..0d02fb5
+--- /dev/null
++++ b/finetuning/scripts/utils/__init__.py
+@@ -0,0 +1,5 @@
++"""Shared utilities for OpenAI API calls."""
++
++from utils.openai_utils import call_with_retry
++
++__all__ = ["call_with_retry"]
+diff --git a/finetuning/scripts/utils/openai_utils.py b/finetuning/scripts/utils/openai_utils.py
+new file mode 100644
+index 0000000..cb7c06c
+--- /dev/null
++++ b/finetuning/scripts/utils/openai_utils.py
+@@ -0,0 +1,52 @@
++"""OpenAI API utilities with exponential backoff retry."""
++
++import logging
++import re
++import time
++
++from openai import OpenAI, RateLimitError, APIError
++
++logger = logging.getLogger(__name__)
++
++_FENCE_RE = re.compile(r"^```(?:json)?\s*\n?(.*?)\n?```\s*$", re.DOTALL)
++
++
++def strip_json_fences(text: str) -> str:
++    """Strip markdown code fences from model output before JSON parsing.
++
++    gpt-4o sometimes wraps JSON in ```json ... ``` despite instructions.
++    """
++    text = text.strip()
++    m = _FENCE_RE.match(text)
++    return m.group(1).strip() if m else text
++
++
++def call_with_retry(
++    client: OpenAI,
++    messages: list[dict],
++    model: str = "gpt-4o-mini",
++    temperature: float = 0,
++    max_tokens: int = 512,
++    max_retries: int = 3,
++) -> str:
++    """OpenAI chat completion with exponential backoff."""
++    for attempt in range(max_retries):
++        try:
++            response = client.chat.completions.create(
++                model=model,
++                messages=messages,
++                temperature=temperature,
++                max_tokens=max_tokens,
++            )
++            return response.choices[0].message.content or ""
++        except RateLimitError:
++            wait = 2 ** attempt * 5
++            logger.warning("Rate limit hit, waiting %ds (attempt %d/%d)", wait, attempt + 1, max_retries)
++            time.sleep(wait)
++        except APIError as e:
++            wait = 2 ** attempt * 2
++            logger.warning("API error: %s, waiting %ds (attempt %d/%d)", e, wait, attempt + 1, max_retries)
++            if attempt == max_retries - 1:
++                raise
++            time.sleep(wait)
++    raise RuntimeError("Max retries exceeded")
+-- 
+2.43.0
+
