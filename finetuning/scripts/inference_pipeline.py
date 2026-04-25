@@ -5,9 +5,10 @@ import logging
 import time
 from dataclasses import dataclass, field
 
-from openai import OpenAI, RateLimitError, APIError
+from openai import OpenAI
 
 from confidence import ConstraintChecker, ConfidenceScorer, SelfChecker
+from utils.openai_utils import call_with_retry
 
 logger = logging.getLogger(__name__)
 
@@ -239,26 +240,14 @@ class InferencePipeline:
 
     def _extract_with_retry(self, vacancy_text: str, max_retries: int = 3) -> str:
         """Call gpt-4o-mini for extraction with exponential backoff retry."""
-        for attempt in range(max_retries):
-            try:
-                response = self._client.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=[
-                        {"role": "system", "content": SYSTEM_PROMPT},
-                        {"role": "user", "content": EXTRACTION_PROMPT + vacancy_text},
-                    ],
-                    temperature=0,
-                    max_tokens=512,
-                )
-                return response.choices[0].message.content or ""
-            except RateLimitError:
-                wait = 2 ** attempt * 5
-                logger.warning("Rate limit hit, waiting %ds (attempt %d/%d)", wait, attempt + 1, max_retries)
-                time.sleep(wait)
-            except APIError as e:
-                wait = 2 ** attempt * 2
-                logger.warning("API error: %s, waiting %ds (attempt %d/%d)", e, wait, attempt + 1, max_retries)
-                if attempt == max_retries - 1:
-                    raise
-                time.sleep(wait)
-        raise RuntimeError("Max retries exceeded")
+        return call_with_retry(
+            self._client,
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": EXTRACTION_PROMPT + vacancy_text},
+            ],
+            model="gpt-4o-mini",
+            temperature=0,
+            max_tokens=512,
+            max_retries=max_retries,
+        )

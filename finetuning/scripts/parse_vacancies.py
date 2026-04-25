@@ -4,13 +4,15 @@ import json
 import logging
 import re
 import sys
-import time
 from pathlib import Path
 
 from dotenv import load_dotenv
-from openai import OpenAI, RateLimitError, APIError
+from openai import OpenAI
 
 load_dotenv()
+
+sys.path.insert(0, str(Path(__file__).parent))
+from utils.openai_utils import call_with_retry
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -68,33 +70,6 @@ def clean_vacancy(text: str) -> str:
     return text.strip()
 
 
-def call_openai_with_retry(client: OpenAI, vacancy_text: str, max_retries: int = 3) -> str:
-    """Call gpt-4o-mini with exponential backoff retry."""
-    for attempt in range(max_retries):
-        try:
-            response = client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": EXTRACTION_PROMPT + vacancy_text},
-                ],
-                temperature=0,
-                max_tokens=512,
-            )
-            return response.choices[0].message.content or ""
-        except RateLimitError:
-            wait = 2 ** attempt * 5
-            logger.warning("Rate limit hit, waiting %ds (attempt %d/%d)", wait, attempt + 1, max_retries)
-            time.sleep(wait)
-        except APIError as e:
-            wait = 2 ** attempt * 2
-            logger.warning("API error: %s, waiting %ds (attempt %d/%d)", e, wait, attempt + 1, max_retries)
-            if attempt == max_retries - 1:
-                raise
-            time.sleep(wait)
-    raise RuntimeError("Max retries exceeded")
-
-
 def make_record(vacancy_text: str, extraction_json: str) -> dict:
     """Build a JSONL messages record."""
     return {
@@ -125,7 +100,13 @@ def main() -> None:
                 logger.warning("Vacancy %d too short after cleaning, skipping", i)
                 continue
             try:
-                extraction = call_openai_with_retry(client, cleaned)
+                extraction = call_with_retry(
+                    client,
+                    messages=[
+                        {"role": "system", "content": SYSTEM_PROMPT},
+                        {"role": "user", "content": EXTRACTION_PROMPT + cleaned},
+                    ],
+                )
                 json.loads(extraction)  # validate JSON
                 record = make_record(cleaned, extraction)
                 out.write(json.dumps(record, ensure_ascii=False) + "\n")
