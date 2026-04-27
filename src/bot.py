@@ -15,10 +15,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 # local
 from src.config import settings
-from src.di import build_conversation_service, build_llm_service, build_session_pool
+from src.di import (
+    build_conversation_service,
+    build_injection_guard,
+    build_llm_service,
+    build_session_pool,
+)
 from src.handlers import assistant_router, history_router, start_router, stats_router
 from src.middlewares.auth import AuthMiddleware
 from src.middlewares.db_session import DbSessionMiddleware
+from src.services.injection_guard import InjectionGuard
 from src.utils.messages import INTERNAL_ERROR_MESSAGE
 
 logging.basicConfig(
@@ -31,8 +37,9 @@ logger = logging.getLogger(__name__)
 class ServiceInjectMiddleware:
     """Middleware that resolves per-request services from the DI factory and injects them."""
 
-    def __init__(self, llm_service: Any) -> None:
+    def __init__(self, llm_service: Any, injection_guard: InjectionGuard | None) -> None:
         self._llm_service = llm_service
+        self._injection_guard = injection_guard
 
     async def __call__(
         self,
@@ -44,6 +51,7 @@ class ServiceInjectMiddleware:
         data["conversation_service"] = build_conversation_service(
             session=session,
             llm_service=self._llm_service,
+            injection_guard=self._injection_guard,
         )
         return await handler(event, data)
 
@@ -55,6 +63,12 @@ async def main() -> None:
 
     session_pool = build_session_pool()
     llm_service = build_llm_service()
+    injection_guard = build_injection_guard()
+
+    logger.info(
+        "Injection protection: %s",
+        "ENABLED" if injection_guard is not None else "DISABLED (demo mode)",
+    )
 
     bot = Bot(
         token=settings.bot_token,
@@ -65,7 +79,7 @@ async def main() -> None:
     # Outer → inner: auth → db_session → service_inject → handlers
     dp.update.outer_middleware(AuthMiddleware())
     dp.update.middleware(DbSessionMiddleware(session_pool=session_pool))
-    dp.update.middleware(ServiceInjectMiddleware(llm_service=llm_service))
+    dp.update.middleware(ServiceInjectMiddleware(llm_service=llm_service, injection_guard=injection_guard))
 
     # Register routers (order matters: commands before plain-text assistant)
     dp.include_router(start_router)

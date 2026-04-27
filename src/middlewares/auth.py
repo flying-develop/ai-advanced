@@ -23,14 +23,15 @@ class AuthMiddleware(BaseMiddleware):
         event: TelegramObject,
         data: Dict[str, Any],
     ) -> Any:
-        update: Update = data.get("event_update")  # type: ignore[assignment]
+        # At dp.update outer_middleware level, `event` IS the Update object directly.
+        # `data["event_update"]` is only populated later inside the router chain.
+        update: Update = event  # type: ignore[assignment]
 
         user = None
-        if update is not None:
-            if update.message:
-                user = update.message.from_user
-            elif update.callback_query:
-                user = update.callback_query.from_user
+        if update.message:
+            user = update.message.from_user
+        elif update.callback_query:
+            user = update.callback_query.from_user
 
         if user is None or user.id != settings.allowed_user_id:
             logger.warning(
