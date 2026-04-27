@@ -11,10 +11,41 @@ from typing import Optional
 from src.config import settings
 from src.models.conversation import Message as MessageModel
 from src.repositories.conversation_repo import ConversationRepository
+from src.services.injection_guard import InjectionGuard
 from src.services.llm_service import LLMService, LLMServiceError
-from src.utils.messages import LLM_ERROR_FALLBACK
+from src.utils.messages import INJECTION_BLOCKED_MESSAGE, INJECTION_OUTPUT_BLOCKED, LLM_ERROR_FALLBACK
 
 logger = logging.getLogger(__name__)
+attack_logger = logging.getLogger("attack_log")
+
+
+def _log_attack(
+    *,
+    stage: str,
+    attack_type: str | None,
+    user_input: str,
+    result: str,
+    response: str,
+    protection: bool,
+) -> None:
+    """Emit a structured attack-log entry that mirrors the day11-attack-log.md format."""
+    attack_logger.warning(
+        "\n"
+        "┌─ ATTACK LOG ──────────────────────────────────────\n"
+        "│ Stage      : %s\n"
+        "│ Type       : %s\n"
+        "│ Protection : %s\n"
+        "│ Input      : %.120s\n"
+        "│ Result     : %s\n"
+        "│ Response   : %.120s\n"
+        "└────────────────────────────────────────────────────",
+        stage,
+        attack_type or "unknown",
+        "ENABLED" if protection else "DISABLED",
+        user_input.replace("\n", " "),
+        result,
+        response.replace("\n", " "),
+    )
 
 
 @dataclass
@@ -39,9 +70,11 @@ class ConversationService:
         self,
         llm_service: LLMService,
         conversation_repo: ConversationRepository,
+        injection_guard: InjectionGuard | None = None,
     ) -> None:
         self._llm = llm_service
         self._repo = conversation_repo
+        self._guard = injection_guard
 
     async def get_ai_response(self, user_id: int, user_message: str) -> str:
         """Process user message: save, build context, call LLM, save response.
@@ -73,6 +106,19 @@ class ConversationService:
         )
         context = existing_context + [pending_user_msg]
 
+        input_check = self._guard.check_input(user_message) if self._guard is not None else None
+
+        if input_check is not None and not input_check.is_safe:
+            _log_attack(
+                stage="INPUT",
+                attack_type=input_check.attack_type,
+                user_input=user_message,
+                result="BLOCKED",
+                response=INJECTION_BLOCKED_MESSAGE,
+                protection=True,
+            )
+            return INJECTION_BLOCKED_MESSAGE
+
         try:
             t0 = time.monotonic()
             ai_response = await self._llm.complete(messages=context)
@@ -81,6 +127,30 @@ class ConversationService:
         except LLMServiceError:
             logger.exception("LLM request failed for user_id=%s", user_id)
             return LLM_ERROR_FALLBACK
+
+        if self._guard is not None:
+            output_check = self._guard.check_output(ai_response)
+            if not output_check.is_safe:
+                _log_attack(
+                    stage="OUTPUT",
+                    attack_type=output_check.attack_type,
+                    user_input=user_message,
+                    result="BLOCKED",
+                    response=INJECTION_OUTPUT_BLOCKED,
+                    protection=True,
+                )
+                return INJECTION_OUTPUT_BLOCKED
+
+            # Attack pattern was detected by input guard but slipped past hardened prompt.
+            if input_check is not None and not input_check.is_safe:
+                _log_attack(
+                    stage="PASSED",
+                    attack_type=input_check.attack_type,
+                    user_input=user_message,
+                    result="SUCCEEDED — hardened prompt did not hold",
+                    response=ai_response,
+                    protection=True,
+                )
 
         # Persist both messages only after a successful LLM response.
         await self._repo.add_message(

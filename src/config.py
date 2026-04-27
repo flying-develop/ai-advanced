@@ -25,8 +25,11 @@ class Settings(BaseSettings):
 
     db_url: str = "sqlite+aiosqlite:///data/bot.db"
     qwen_base_url: str = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
-    llm_model: str = "qwen-plus"
+    llm_model: str
     max_context_messages: int = 20
+
+    # Set to False to demo unprotected mode (weak prompt, no input/output guards)
+    injection_protection_enabled: bool = True
 
     @field_validator("max_context_messages")
     @classmethod

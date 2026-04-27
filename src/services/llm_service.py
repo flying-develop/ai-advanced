@@ -28,10 +28,12 @@ class LLMService:
         api_key: Optional[str] = None,
         model: Optional[str] = None,
         base_url: Optional[str] = None,
+        system_prompt: Optional[str] = None,
     ) -> None:
         self._api_key = api_key or settings.qwen_api_key
         self._model = model or settings.llm_model
         self._base_url = (base_url or settings.qwen_base_url).rstrip("/")
+        self._system_prompt = system_prompt
 
     async def complete(self, messages: list[Message]) -> str:
         """Send a list of conversation messages to the LLM and return the reply.
@@ -75,5 +77,8 @@ class LLMService:
     def _format_messages(
         self, messages: list[Message]
     ) -> list[dict[str, str]]:
-        """Convert ORM Message objects to OpenAI-compatible message dicts."""
-        return [{"role": msg.role, "content": msg.content} for msg in messages]
+        """Convert ORM Message objects to OpenAI-compatible message dicts, prepending system prompt."""
+        formatted = [{"role": msg.role, "content": msg.content} for msg in messages]
+        if self._system_prompt:
+            formatted.insert(0, {"role": "system", "content": self._system_prompt})
+        return formatted
