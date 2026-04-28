@@ -17,13 +17,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.config import settings
 from src.di import (
     build_conversation_service,
+    build_indirect_demo_runner,
     build_injection_guard,
     build_llm_service,
     build_session_pool,
 )
-from src.handlers import assistant_router, history_router, start_router, stats_router
+from src.handlers import (
+    assistant_router,
+    history_router,
+    indirect_demo_router,
+    start_router,
+    stats_router,
+)
 from src.middlewares.auth import AuthMiddleware
 from src.middlewares.db_session import DbSessionMiddleware
+from src.services.indirect_injection.demo_runner import IndirectInjectionDemoRunner
 from src.services.injection_guard import InjectionGuard
 from src.utils.messages import INTERNAL_ERROR_MESSAGE
 
@@ -37,9 +45,15 @@ logger = logging.getLogger(__name__)
 class ServiceInjectMiddleware:
     """Middleware that resolves per-request services from the DI factory and injects them."""
 
-    def __init__(self, llm_service: Any, injection_guard: InjectionGuard | None) -> None:
+    def __init__(
+        self,
+        llm_service: Any,
+        injection_guard: InjectionGuard | None,
+        demo_runner: IndirectInjectionDemoRunner | None = None,
+    ) -> None:
         self._llm_service = llm_service
         self._injection_guard = injection_guard
+        self._demo_runner = demo_runner
 
     async def __call__(
         self,
@@ -53,6 +67,8 @@ class ServiceInjectMiddleware:
             llm_service=self._llm_service,
             injection_guard=self._injection_guard,
         )
+        if self._demo_runner is not None:
+            data["demo_runner"] = self._demo_runner
         return await handler(event, data)
 
 
@@ -64,6 +80,7 @@ async def main() -> None:
     session_pool = build_session_pool()
     llm_service = build_llm_service()
     injection_guard = build_injection_guard()
+    demo_runner = build_indirect_demo_runner()
 
     logger.info(
         "Injection protection: %s",
@@ -79,12 +96,19 @@ async def main() -> None:
     # Outer → inner: auth → db_session → service_inject → handlers
     dp.update.outer_middleware(AuthMiddleware())
     dp.update.middleware(DbSessionMiddleware(session_pool=session_pool))
-    dp.update.middleware(ServiceInjectMiddleware(llm_service=llm_service, injection_guard=injection_guard))
+    dp.update.middleware(
+        ServiceInjectMiddleware(
+            llm_service=llm_service,
+            injection_guard=injection_guard,
+            demo_runner=demo_runner,
+        )
+    )
 
     # Register routers (order matters: commands before plain-text assistant)
     dp.include_router(start_router)
     dp.include_router(stats_router)
     dp.include_router(history_router)
+    dp.include_router(indirect_demo_router)
     dp.include_router(assistant_router)
 
     @dp.errors()

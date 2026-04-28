@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     # Set to False to demo unprotected mode (weak prompt, no input/output guards)
     injection_protection_enabled: bool = True
 
+    # Set to True to enable the /indirect_demo command (requires LLM credits)
+    indirect_demo_enabled: bool = False
+
     @field_validator("max_context_messages")
     @classmethod
     def max_context_messages_must_be_positive(cls, v: int) -> int:
