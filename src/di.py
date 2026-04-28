@@ -16,6 +16,14 @@ from src.config import settings
 from src.models.base import Base
 from src.repositories.conversation_repo import ConversationRepository
 from src.services.conversation_service import ConversationService
+from src.services.indirect_injection.agents import (
+    DocumentAnalystAgent,
+    EmailSummarizerAgent,
+    WebSearchAgent,
+)
+from src.services.indirect_injection.demo_runner import IndirectInjectionDemoRunner
+from src.services.indirect_injection.output_validator import OutputValidator
+from src.services.indirect_injection.sanitizer import InputSanitizer
 from src.services.injection_guard import (
     InjectionGuard,
     SYSTEM_PROMPT_HARDENED,
@@ -55,6 +63,22 @@ def build_injection_guard() -> InjectionGuard | None:
     if settings.injection_protection_enabled:
         return InjectionGuard()
     return None
+
+
+def build_indirect_demo_runner() -> IndirectInjectionDemoRunner | None:
+    """Return IndirectInjectionDemoRunner when indirect_demo_enabled=True, None otherwise."""
+    if not settings.indirect_demo_enabled:
+        return None
+    email_agent = EmailSummarizerAgent(LLMService(system_prompt=EmailSummarizerAgent.SYSTEM_PROMPT))
+    doc_agent = DocumentAnalystAgent(LLMService(system_prompt=DocumentAnalystAgent.SYSTEM_PROMPT))
+    web_agent = WebSearchAgent(LLMService(system_prompt=WebSearchAgent.SYSTEM_PROMPT))
+    return IndirectInjectionDemoRunner(
+        email_agent=email_agent,
+        doc_agent=doc_agent,
+        web_agent=web_agent,
+        sanitizer=InputSanitizer(),
+        validator=OutputValidator(),
+    )
 
 
 def build_conversation_service(
