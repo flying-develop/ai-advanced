@@ -26,6 +26,7 @@ from src.handlers import (
     assistant_router,
     history_router,
     indirect_demo_router,
+    message_logging_router,
     start_router,
     stats_router,
 )
@@ -39,6 +40,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
+logging.getLogger("src.handlers.message_handler").setLevel(logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 
@@ -104,7 +106,8 @@ async def main() -> None:
         )
     )
 
-    # Register routers (order matters: commands before plain-text assistant)
+    # Register routers (order matters: logging first, then commands, then plain-text assistant)
+    dp.include_router(message_logging_router)
     dp.include_router(start_router)
     dp.include_router(stats_router)
     dp.include_router(history_router)
